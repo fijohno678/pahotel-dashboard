@@ -356,8 +356,8 @@ var METRIC_DEFS = {
   cogs:         { label: 'Cost of goods (excl. gaming)', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
                   def: 'Your own definition (differs from the standard kit): your COGS lines added together, ' + KIT_CONFIG.taxLabel + ', as a % of revenue without Gaming Machines and Keno income · from ' + P.accounting,
                   decision: 'Rising as a share of revenue? Check supplier prices, portioning and waste.' },
-  wage:         { label: 'Wage %', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
-                  def: 'Wages plus super ÷ revenue · from ' + P.accounting,
+  wage:         { label: 'Wage % (excl. gaming)', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
+                  def: 'Your own definition (differs from the standard kit): staff wages plus super (owners\u2019 pay excluded) ÷ revenue without Gaming Machines and Keno income · from ' + P.accounting,
                   decision: 'Rostered to your trade? Over target means trim hours or lift sales per shift.' },
   cogsExGaming: { label: 'Cost of goods % (excl. gaming)', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
                   def: 'Your extra measure: Cost of Sales ÷ revenue without Gaming Machines Income · from ' + P.accounting + '. The standard Cost of goods card is unchanged.',
@@ -628,7 +628,7 @@ function revenueExGaming(vals) {
 function sharePct(key, vals) {
   /* Owner's choice (7 Oct 2026): the Cost of goods card itself uses revenue
      without gaming/keno - a marked deviation from kpi-spec metric 4. */
-  var base = (key === 'wageExGaming' || key === 'cogsExGaming' || key === 'cogs') ? revenueExGaming(vals) : vals.revenue;
+  var base = (key === 'wage' || key === 'wageExGaming' || key === 'cogsExGaming' || key === 'cogs') ? revenueExGaming(vals) : vals.revenue;
   if (base == null || base === 0) return null;
   var d = shareDollars(key, vals);
   if (d == null) return null;
@@ -654,8 +654,11 @@ function metricValue(key, vals) {
   if (key === 'overheads') return vals.overheads;
   if (key === 'profit') return profitDollars(vals);
   if (key === 'wage') {
-    if (vals.wagesSuper == null || vals.revenue == null || vals.revenue === 0) return null;
-    return (vals.wagesSuper / vals.revenue) * 100;
+    /* Owner's choice (8 Oct 2026): Wage % uses revenue without gaming/keno -
+       a marked deviation from kpi-spec metric 5. */
+    var rw = revenueExGaming(vals);
+    if (vals.wagesSuper == null || rw == null || rw === 0) return null;
+    return (vals.wagesSuper / rw) * 100;
   }
   if (key === 'cogsExGaming') {
     var rc = revenueExGaming(vals);
@@ -1019,7 +1022,7 @@ function trendSeries(key) {
     var cg = at(acc.cogs, i), wg = at(acc.wagesSuper, i), oh = at(acc.overheads, i);
     if (key === 'cogs') { var rcx = rev - (at(acc.gamingRevenue, i) || 0); return (cg == null || rcx === 0) ? null : (cg / rcx) * 100; }
     if (key === 'overheads') return (oh == null) ? null : (oh / rev) * 100;
-    if (key === 'wage') return (wg == null) ? null : (wg / rev) * 100;
+    if (key === 'wage') { var rwg = rev - (at(acc.gamingRevenue, i) || 0); return (wg == null || rwg === 0) ? null : (wg / rwg) * 100; }
     if (key === 'cogsExGaming') { var rcg = rev - (at(acc.gamingRevenue, i) || 0); return (cg == null || rcg === 0) ? null : (cg / rcg) * 100; }
     if (key === 'wageExGaming') { var rxg = rev - (at(acc.gamingRevenue, i) || 0); return (wg == null || rxg === 0) ? null : (wg / rxg) * 100; }
     if (key === 'profit') return (cg == null || wg == null || oh == null) ? null : ((rev - cg - wg - oh) / rev) * 100;
@@ -1356,7 +1359,7 @@ function renderRecon(root) {
     } else if (k === 'wageExGaming') {
       inst = 'In your ' + P.accounting + ' profit and loss for these dates, add the staff wages and super lines, then divide by Total Income minus the Gaming Machines Income line. Does it come to the percentage above?';
     } else if (k === 'wage') {
-      inst = 'In your ' + P.accounting + ' profit and loss for these dates, add the wages and super lines, then divide by the revenue figure you verified. Does it come to the percentage above?';
+      inst = 'In your ' + P.accounting + ' profit and loss for these dates, add the staff wages and super lines (not the Johnson lines), then divide by Total Income minus Gaming Machines and Keno income. Does it come to the percentage above?';
     } else {
       inst = 'Open ' + P.accounting + ' and run your profit and loss for exactly these dates. Does ' + def.label + ' there match the figure above, to the cent?';
     }
