@@ -78,23 +78,58 @@ const ADAPTERS = {
      from the connections endpoint, sandbox = tenant name contains
      'Demo Company'. Secrets: ACCOUNTING_CLIENT_ID, ACCOUNTING_CLIENT_SECRET.
   */
+  /* WIRED: Xero (October 2026). Read-only: offline_access +
+     accounting.reports.profitandloss.read. P&L, accrual basis, standard layout. */
   accounting: {
-    configured: false,
-    auth: null, /* 'oauth' | 'token' */
+    configured: true,
+    auth: 'oauth',
     oauth: {
-      /* Example (Xero) - fill these when you wire the adapter:
-         authorizeUrl: 'https://login.xero.com/identity/connect/authorize',
-         tokenUrl: 'https://identity.xero.com/connect/token',
-         scopes: 'offline_access accounting.reports.profitandloss.read',
-         clientIdSecret: 'ACCOUNTING_CLIENT_ID',
-         clientSecretSecret: 'ACCOUNTING_CLIENT_SECRET',
-         tokenAuth: 'basic'   // Xero's token endpoint wants HTTP Basic client auth
-                              // (client_secret_basic). Use 'post' only for providers
-                              // that expect client_id/secret in the form body. */
+      authorizeUrl: 'https://login.xero.com/identity/connect/authorize',
+      tokenUrl: 'https://identity.xero.com/connect/token',
+      scopes: 'offline_access accounting.reports.profitandloss.read',
+      clientIdSecret: 'ACCOUNTING_CLIENT_ID',
+      clientSecretSecret: 'ACCOUNTING_CLIENT_SECRET',
+      tokenAuth: 'basic'
     },
-    async status(env, h) { return { connected: false }; },
-    async fetchRange(env, h, q) { throw new NotConfigured('accounting'); },
-    async fetchMonthly(env, h, q) { throw new NotConfigured('accounting'); }
+    async status(env, h) {
+      const t = await h.getTokens();
+      if (!t || !t.access_token) return { connected: false };
+      const tenant = await xeroTenant(env, h);
+      return {
+        connected: true,
+        org: tenant.name,
+        sandbox: /demo company/i.test(tenant.name || '')
+      };
+    },
+    async fetchRange(env, h, q) {
+      const rep = await xeroPnl(env, h, { fromDate: q.from, toDate: q.to }, 120);
+      const cols = xeroColumns(rep, 1);
+      return cols[0].figures;
+    },
+    async fetchMonthly(env, h, q) {
+      /* Xero returns up to 12 monthly columns per call (newest first); chunk. */
+      const months = monthList(q.fromMonth, q.toMonth);
+      const out = { months: [], revenue: [], cogs: [], wagesSuper: [], overheads: [] };
+      const byMonth = {};
+      for (let end = months.length; end > 0; end -= 12) {
+        const start = Math.max(0, end - 12);
+        const n = end - start;
+        const last = months[end - 1];
+        const [ly, lm] = last.split('-').map(Number);
+        const lastDay = new Date(Date.UTC(ly, lm, 0)).getUTCDate();
+        const params = { fromDate: last + '-01', toDate: last + '-' + String(lastDay).padStart(2, '0') };
+        if (n > 1) { params.periods = String(n - 1); params.timeframe = 'MONTH'; }
+        const rep = await xeroPnl(env, h, params, 3600);
+        const cols = xeroColumns(rep, n);
+        for (let i = 0; i < n; i++) byMonth[months[end - 1 - i]] = cols[i] ? cols[i].figures : null;
+      }
+      months.forEach((mo) => {
+        const f = byMonth[mo];
+        out.months.push(mo);
+        ['revenue', 'cogs', 'wagesSuper', 'overheads'].forEach((k) => out[k].push(f ? f[k] : null));
+      });
+      return out;
+    }
   },
 
   /* >>> ADAPTER 2: POS
@@ -144,6 +179,139 @@ const ADAPTERS = {
 
 class NotConfigured extends Error {
   constructor(source) { super('not configured: ' + source); this.source = source; }
+}
+
+/* ---------------- Xero helpers (accounting adapter) ----------------
+   Wage/super lines are proposed by keyword and CONFIRMED WITH THE OWNER at
+   reconciliation (kpi-spec.md, metric 5). Once confirmed, list the exact
+   account names in WAGE_ACCOUNTS_CONFIRMED and that list wins over keywords. */
+const WAGE_RE = /\b(wages?|salar(y|ies)|superannuation|super|payroll|annual leave|long service|workcover|workers'? comp(ensation)?)\b/i;
+const WAGE_ACCOUNTS_CONFIRMED = null; /* e.g. ['Wages and Salaries', 'Superannuation'] */
+function isWageLine(label) {
+  if (Array.isArray(WAGE_ACCOUNTS_CONFIRMED)) {
+    const l = String(label || '').trim().toLowerCase();
+    return WAGE_ACCOUNTS_CONFIRMED.some((a) => a.trim().toLowerCase() === l);
+  }
+  return WAGE_RE.test(label || '');
+}
+function classifySection(title) {
+  const t = String(title || '').toLowerCase();
+  if (!t.trim()) return null;
+  if (/other income/.test(t)) return 'otherIncome';
+  if (/cost of sales|cost of goods|direct cost/.test(t)) return 'cogs';
+  if (/income|revenue|sales/.test(t)) return 'revenue';
+  if (/operating expenses|^(less )?expenses$|overheads/.test(t)) return 'opex';
+  return 'excluded';
+}
+function toCents(v) {
+  const s = String(v == null ? '' : v).replace(/,/g, '').trim();
+  if (!s) return 0;
+  const neg = /^\(.*\)$/.test(s);
+  const n = parseFloat(s.replace(/[()]/g, ''));
+  if (!isFinite(n)) return 0;
+  return Math.round((neg ? -n : n) * 100);
+}
+
+async function xeroTenant(env, h) {
+  const t = await h.getTokens();
+  const cached = await env.TOKENS.get('xero:tenant');
+  if (cached) {
+    try { const c = JSON.parse(cached); if (c.stamp === t.obtained_at && c.id) return c; } catch (e) {}
+  }
+  const conns = await h.fetchJson('https://api.xero.com/connections', { headers: { Accept: 'application/json' } });
+  const orgs = (Array.isArray(conns) ? conns : []).filter((c) => !c.tenantType || c.tenantType === 'ORGANISATION');
+  if (!orgs.length) { const e = new Error('no organisation'); e.status = 403; throw e; }
+  orgs.sort((a, b) => String(b.updatedDateUtc || b.createdDateUtc || '').localeCompare(String(a.updatedDateUtc || a.createdDateUtc || '')));
+  const pick = { id: orgs[0].tenantId, name: orgs[0].tenantName, stamp: t.obtained_at, count: orgs.length };
+  await env.TOKENS.put('xero:tenant', JSON.stringify(pick));
+  return pick;
+}
+
+async function xeroPnl(env, h, params, ttl) {
+  const tenant = await xeroTenant(env, h);
+  const p = new URLSearchParams({ ...params, standardLayout: 'true', paymentsOnly: 'false' });
+  const key = 'xero:pnl:' + tenant.id + ':' + p.toString();
+  const hit = await env.TOKENS.get(key);
+  if (hit) { try { return JSON.parse(hit); } catch (e) {} }
+  const data = await h.fetchJson('https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss?' + p.toString(), {
+    headers: { 'xero-tenant-id': tenant.id, Accept: 'application/json' }
+  });
+  const rep = data && data.Reports && data.Reports[0];
+  if (!rep) { const e = new Error('no report'); e.status = 500; throw e; }
+  try { await env.TOKENS.put(key, JSON.stringify(rep), { expirationTtl: Math.max(60, ttl || 120) }); } catch (e) {}
+  return rep;
+}
+
+/* Turn a P&L report into n columns (column 0 = first amount column, which for a
+   multi-period report is the NEWEST month). Each column: { figures, lines }. */
+function xeroColumns(rep, n) {
+  const cols = [];
+  for (let i = 0; i < n; i++) cols.push({ c: { revenue: 0, cogs: 0, wages: 0, opex: 0 }, seen: {}, lines: [] });
+  (rep.Rows || []).forEach((sec) => {
+    if (sec.RowType !== 'Section') return;
+    const cls = classifySection(sec.Title);
+    if (!cls) return;
+    const rows = sec.Rows || [];
+    const summary = rows.filter((r) => r.RowType === 'SummaryRow')[0];
+    const detail = rows.filter((r) => r.RowType === 'Row');
+    for (let i = 0; i < n; i++) {
+      const col = cols[i];
+      const amt = (r) => toCents(r.Cells && r.Cells[i + 1] ? r.Cells[i + 1].Value : 0);
+      const total = summary ? amt(summary) : detail.reduce((s, r) => s + amt(r), 0);
+      detail.forEach((r) => {
+        const label = r.Cells && r.Cells[0] ? r.Cells[0].Value : '';
+        let as = cls;
+        if (cls === 'opex' && isWageLine(label)) { as = 'wages'; col.c.wages += amt(r); }
+        if (i === 0) col.lines.push({ section: sec.Title, label: label, as: as, cents: amt(r), wageLike: cls === 'cogs' && WAGE_RE.test(label) });
+      });
+      if (cls === 'revenue' || cls === 'cogs' || cls === 'opex') { col.c[cls] += total; col.seen[cls] = true; }
+    }
+  });
+  return cols.map((col) => ({
+    lines: col.lines,
+    figures: {
+      revenue: col.c.revenue / 100,
+      cogs: col.c.cogs / 100,
+      wagesSuper: col.c.wages / 100,
+      overheads: (col.c.opex - col.c.wages) / 100
+    }
+  }));
+}
+
+/* Owner-readable page: how each line of their Xero P&L is counted. Used at
+   reconciliation to confirm the wage/super list (a business question). */
+async function accountsPage(env, url) {
+  const h = makeHelpers(env, 'accounting');
+  const now = new Date();
+  const lmEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0));
+  const from = url.searchParams.get('from') || (lmEnd.toISOString().slice(0, 8) + '01');
+  const to = url.searchParams.get('to') || lmEnd.toISOString().slice(0, 10);
+  let body;
+  try {
+    const tenant = await xeroTenant(env, h);
+    const rep = await xeroPnl(env, h, { fromDate: from, toDate: to }, 120);
+    const col = xeroColumns(rep, 1)[0];
+    const money = (c) => (c < 0 ? '−$' : '$') + (Math.abs(c) / 100).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const groups = [
+      ['revenue', 'Counted as Revenue'], ['cogs', 'Counted as Cost of goods'],
+      ['wages', 'Counted as Wages and super'], ['opex', 'Counted as Overheads'],
+      ['otherIncome', 'Left out (Other Income)'], ['excluded', 'Left out (other sections)']
+    ];
+    body = '<h1>How your Xero numbers are counted</h1><p>' + escHtml(tenant.name) + ' · ' + from + ' to ' + to + ' · accrual basis, ex-GST</p>';
+    groups.forEach((g) => {
+      const ls = col.lines.filter((l) => l.as === g[0]);
+      if (!ls.length) return;
+      body += '<h2>' + g[1] + '</h2><table>' + ls.map((l) => '<tr><td>' + escHtml(l.label) + (l.wageLike ? ' <em>(sits in Cost of Sales)</em>' : '') + '</td><td>' + money(l.cents) + '</td></tr>').join('') + '</table>';
+    });
+    const f = col.figures;
+    body += '<h2>Totals</h2><table><tr><td>Revenue</td><td>' + money(Math.round(f.revenue * 100)) + '</td></tr><tr><td>Cost of goods</td><td>' + money(Math.round(f.cogs * 100)) + '</td></tr><tr><td>Wages and super</td><td>' + money(Math.round(f.wagesSuper * 100)) + '</td></tr><tr><td>Overheads</td><td>' + money(Math.round(f.overheads * 100)) + '</td></tr></table>';
+  } catch (e) {
+    body = '<h1>Not connected yet</h1><p>Connect Xero on the Connections screen first.</p>';
+  }
+  return htmlResponse('<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>How your numbers are counted</title><style>body{font-family:system-ui,sans-serif;background:#FAF7F2;color:#2A2420;max-width:720px;margin:2rem auto;padding:0 1rem}h1{font-size:26px}h2{font-size:17px;margin-top:1.6rem}p{color:#8C8075}table{width:100%;border-collapse:collapse;background:#fffdf9}td{padding:6px 10px;border-bottom:1px solid #eee}td:last-child{text-align:right;white-space:nowrap}</style></head><body>' + body + '<p><a href="/">Back to your dashboard</a></p></body></html>');
+}
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 const PLAIN_ERRORS = {
@@ -751,6 +919,10 @@ export default {
     if (path === '/' || path === '/index.html') {
       if (loggedIn) return htmlResponse(dashboardHtml);
       return htmlResponse((await passcodeSet(env)) ? loginPage() : setupPage());
+    }
+    if (path === '/accounts' && request.method === 'GET') {
+      if (!loggedIn) return Response.redirect(url.origin + '/', 302);
+      return accountsPage(env, url);
     }
     if (path === '/api/metrics' && request.method === 'GET') {
       if (!loggedIn) return json({ error: 'auth' }, 401);

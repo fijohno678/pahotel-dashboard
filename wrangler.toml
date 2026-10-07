@@ -28,7 +28,7 @@ binding = "TOKENS"
 # and set it below, and push. Otherwise a later deploy can try to re-provision and
 # either error (10014 "namespace already exists") or orphan the namespace holding
 # the dashboard password + connection tokens. Omit once, then pin:
-# id = "<paste the TOKENS namespace id here after the first deploy>"
+id = "15288a3cf3fc47d4962679b532842c1a"
 
 # ----------------------------------------------------------------------------
 # Secrets - NEVER written in any file, never committed. You cannot reach the
