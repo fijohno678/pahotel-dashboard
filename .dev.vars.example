@@ -1,0 +1,3 @@
+# Optional override only. By default the owner sets the dashboard password
+# on the dashboard first-run screen.
+DASHBOARD_PASSCODE=
