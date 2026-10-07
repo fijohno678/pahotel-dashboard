@@ -356,7 +356,7 @@ var METRIC_DEFS = {
   cogs:         { label: 'Cost of goods (excl. gaming)', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
                   def: 'Your own definition (differs from the standard kit): your COGS lines added together, ' + KIT_CONFIG.taxLabel + ', as a % of revenue without Gaming Machines and Keno income · from ' + P.accounting,
                   decision: 'Rising as a share of revenue? Check supplier prices, portioning and waste.' },
-  wage:         { label: 'Wage % (excl. gaming)', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
+  wage:         { label: 'Wage % (F&B)', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
                   def: 'Your own definition (differs from the standard kit): staff wages plus super (owners\u2019 pay excluded) ÷ revenue without Gaming Machines and Keno income · from ' + P.accounting,
                   decision: 'Rostered to your trade? Over target means trim hours or lift sales per shift.' },
   cogsExGaming: { label: 'Cost of goods % (excl. gaming)', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
