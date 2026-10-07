@@ -193,7 +193,7 @@ const WAGE_ACCOUNTS_CONFIRMED = null; /* e.g. ['Wages and Salaries', 'Superannua
 const WAGE_EXCLUDE_RE = /\bjohnson\b/i;
 /* Owner's extra metric (7 Oct 2026): Wage % (excl. gaming) divides by revenue
    less these Income lines. Revenue itself is unchanged. */
-const GAMING_RE = /\bgaming\b/i;
+const GAMING_RE = /\b(gaming|keno)\b/i; /* Gaming Machines + Keno income */
 function isWageLine(label) {
   if (WAGE_EXCLUDE_RE.test(label || '')) return false;
   if (Array.isArray(WAGE_ACCOUNTS_CONFIRMED)) {
@@ -311,7 +311,7 @@ async function accountsPage(env, url) {
     groups.forEach((g) => {
       const ls = col.lines.filter((l) => l.as === g[0]);
       if (!ls.length) return;
-      body += '<h2>' + g[1] + '</h2><table>' + ls.map((l) => '<tr><td>' + escHtml(l.label) + (l.wageLike ? ' <em>(sits in Cost of Sales)</em>' : '') + (l.as === 'revenue' && GAMING_RE.test(l.label) ? ' <em>(left out of Wage % excl. gaming)</em>' : '') + '</td><td>' + money(l.cents) + '</td></tr>').join('') + '</table>';
+      body += '<h2>' + g[1] + '</h2><table>' + ls.map((l) => '<tr><td>' + escHtml(l.label) + (l.wageLike ? ' <em>(sits in Cost of Sales)</em>' : '') + (l.as === 'revenue' && GAMING_RE.test(l.label) ? ' <em>(gaming/keno: left out of the excl.-gaming percentages)</em>' : '') + '</td><td>' + money(l.cents) + '</td></tr>').join('') + '</table>';
     });
     const f = col.figures;
     body += '<h2>Totals</h2><table><tr><td>Revenue</td><td>' + money(Math.round(f.revenue * 100)) + '</td></tr><tr><td>Cost of goods</td><td>' + money(Math.round(f.cogs * 100)) + '</td></tr><tr><td>Wages and super</td><td>' + money(Math.round(f.wagesSuper * 100)) + '</td></tr><tr><td>Overheads</td><td>' + money(Math.round(f.overheads * 100)) + '</td></tr></table>';

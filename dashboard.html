@@ -273,7 +273,6 @@ var KIT_CONFIG = {
   "metrics": [
     "revenue",
     "cogs",
-    "cogsExGaming",
     "wage",
     "wageExGaming",
     "overheads",
@@ -355,8 +354,8 @@ var METRIC_DEFS = {
   acs:          { label: 'Average customer spend', fmt: 'money2', needs: ['accounting', 'pos'], goodDir: 'up',
                   def: 'Revenue (' + P.accounting + ', ' + KIT_CONFIG.taxLabel + ') ÷ transactions (' + P.pos + ')',
                   decision: 'Are upsells and pricing working? Move it with specials, bundles and staff prompts.' },
-  cogs:         { label: 'Cost of goods', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
-                  def: 'Everything in your Cost of Sales accounts, ' + KIT_CONFIG.taxLabel + ' · from ' + P.accounting,
+  cogs:         { label: 'Cost of goods (excl. gaming)', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
+                  def: 'Your own definition (differs from the standard kit): everything in your Cost of Sales accounts, ' + KIT_CONFIG.taxLabel + ', as a % of revenue without Gaming Machines and Keno income · from ' + P.accounting,
                   decision: 'Rising as a share of revenue? Check supplier prices, portioning and waste.' },
   wage:         { label: 'Wage %', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
                   def: 'Wages plus super ÷ revenue · from ' + P.accounting,
@@ -628,7 +627,9 @@ function revenueExGaming(vals) {
 }
 /* The % of revenue a dual metric represents (its primary headline figure). */
 function sharePct(key, vals) {
-  var base = (key === 'wageExGaming' || key === 'cogsExGaming') ? revenueExGaming(vals) : vals.revenue;
+  /* Owner's choice (7 Oct 2026): the Cost of goods card itself uses revenue
+     without gaming/keno - a marked deviation from kpi-spec metric 4. */
+  var base = (key === 'wageExGaming' || key === 'cogsExGaming' || key === 'cogs') ? revenueExGaming(vals) : vals.revenue;
   if (base == null || base === 0) return null;
   var d = shareDollars(key, vals);
   if (d == null) return null;
@@ -1017,7 +1018,7 @@ function trendSeries(key) {
     if (key === 'acs') { var c = at(pos.count, i); return (rev == null || c == null || c === 0) ? null : rev / c; }
     if (rev == null || rev === 0) return null;
     var cg = at(acc.cogs, i), wg = at(acc.wagesSuper, i), oh = at(acc.overheads, i);
-    if (key === 'cogs') return (cg == null) ? null : (cg / rev) * 100;
+    if (key === 'cogs') { var rcx = rev - (at(acc.gamingRevenue, i) || 0); return (cg == null || rcx === 0) ? null : (cg / rcx) * 100; }
     if (key === 'overheads') return (oh == null) ? null : (oh / rev) * 100;
     if (key === 'wage') return (wg == null) ? null : (wg / rev) * 100;
     if (key === 'cogsExGaming') { var rcg = rev - (at(acc.gamingRevenue, i) || 0); return (cg == null || rcg === 0) ? null : (cg / rcg) * 100; }
