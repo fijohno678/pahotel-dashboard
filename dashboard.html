@@ -272,6 +272,7 @@ var KIT_CONFIG = {
   },
   "metrics": [
     "revenue",
+    "revenueFB",
     "cogs",
     "wage",
     "overheads",
@@ -347,13 +348,16 @@ var METRIC_DEFS = {
   revenue:      { label: 'Revenue', fmt: 'money', needs: ['accounting'], goodDir: 'up', benchmark: true,
                   def: 'All trading income, ' + KIT_CONFIG.taxLabel + ' · from ' + P.accounting,
                   decision: 'Is the top line growing? Sets the base every other number is judged against.' },
+  revenueFB:    { label: 'Revenue (F&B)', fmt: 'money', needs: ['accounting'], goodDir: 'up',
+                  def: 'Your extra measure: all trading income, ' + KIT_CONFIG.taxLabel + ', less Gaming Machines and Keno income · from ' + P.accounting + '. The Revenue card is unchanged.',
+                  decision: 'Is food and beverage trade growing on its own, separate from gaming?' },
   transactions: { label: 'Number of transactions', fmt: 'int', needs: ['pos'], goodDir: 'up',
                   def: 'Completed transactions, voids and refunds excluded · from ' + P.pos,
                   decision: 'Busier or quieter? Points you at footfall versus spend per visit.' },
   acs:          { label: 'Average customer spend', fmt: 'money2', needs: ['accounting', 'pos'], goodDir: 'up',
                   def: 'Revenue (' + P.accounting + ', ' + KIT_CONFIG.taxLabel + ') ÷ transactions (' + P.pos + ')',
                   decision: 'Are upsells and pricing working? Move it with specials, bundles and staff prompts.' },
-  cogs:         { label: 'Cost of goods (excl. gaming)', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
+  cogs:         { label: 'Cost of goods (F&B)', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
                   def: 'Your own definition (differs from the standard kit): your COGS lines added together, ' + KIT_CONFIG.taxLabel + ', as a % of revenue without Gaming Machines and Keno income · from ' + P.accounting,
                   decision: 'Rising as a share of revenue? Check supplier prices, portioning and waste.' },
   wage:         { label: 'Wage % (F&B)', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
@@ -649,6 +653,7 @@ function fmtTarget(key, t) {
 /* metric value for a slot; null = no data; 'zero-count' handled by caller */
 function metricValue(key, vals) {
   if (key === 'revenue') return vals.revenue;
+  if (key === 'revenueFB') return revenueExGaming(vals);
   if (key === 'transactions') return vals.count;
   if (key === 'cogs') return vals.cogs;
   if (key === 'overheads') return vals.overheads;
@@ -1016,6 +1021,7 @@ function trendSeries(key) {
   function val(i) {
     var rev = at(acc.revenue, i);
     if (key === 'revenue') return rev;
+    if (key === 'revenueFB') return (rev == null) ? null : rev - (at(acc.gamingRevenue, i) || 0);
     if (key === 'transactions') return at(pos.count, i);
     if (key === 'acs') { var c = at(pos.count, i); return (rev == null || c == null || c === 0) ? null : rev / c; }
     if (rev == null || rev === 0) return null;
@@ -1352,6 +1358,8 @@ function renderRecon(root) {
       inst = 'Open ' + P.pos + ' reporting for exactly these dates. Does the number of completed transactions match the figure above?';
     } else if (k === 'acs') {
       inst = 'This one is worked out from two numbers you’ve already checked: revenue (from ' + P.accounting + ') divided by transactions (from ' + P.pos + '). If both inputs match, this is right by definition.';
+    } else if (k === 'revenueFB') {
+      inst = 'In your ' + P.accounting + ' profit and loss for these dates, take Total Income and subtract the Gaming Machines and Keno income lines. Does it match the figure above, to the cent?';
     } else if (k === 'cogs') {
       inst = 'In your ' + P.accounting + ' profit and loss for these dates, add up every line named COGS. Does it match the dollar figure on the card, to the cent? Then divide it by Total Income minus Gaming Machines and Keno income: does that match the percentage?';
     } else if (k === 'cogsExGaming') {
@@ -1415,7 +1423,7 @@ var MANUAL_FIELDS = [
   { key: 'rosteredCost', label: 'Rostered wage cost (optional)', kind: 'money',
     help: 'The rostered wage cost from your roster for these dates. Optional, it powers a projected wage percentage.' }
 ];
-var MANUAL_DEP = { revenue: ['revenue'], transactions: ['count'], acs: ['revenue', 'count'], cogs: ['cogs', 'revenue'], cogsExGaming: ['cogs', 'revenue'], wage: ['wagesSuper', 'revenue'], wageExGaming: ['wagesSuper', 'revenue'], overheads: ['overheads', 'revenue'], profit: ['revenue', 'cogs', 'wagesSuper', 'overheads'] };
+var MANUAL_DEP = { revenue: ['revenue'], revenueFB: ['revenue'], transactions: ['count'], acs: ['revenue', 'count'], cogs: ['cogs', 'revenue'], cogsExGaming: ['cogs', 'revenue'], wage: ['wagesSuper', 'revenue'], wageExGaming: ['wagesSuper', 'revenue'], overheads: ['overheads', 'revenue'], profit: ['revenue', 'cogs', 'wagesSuper', 'overheads'] };
 function manualNeededFieldKeys() {
   var set = {};
   CHOSEN.forEach(function (k) { (MANUAL_DEP[k] || []).forEach(function (f) { set[f] = true; }); });
