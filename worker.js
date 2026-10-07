@@ -109,7 +109,9 @@ const ADAPTERS = {
     async fetchMonthly(env, h, q) {
       /* Xero returns up to 12 monthly columns per call (newest first); chunk. */
       const months = monthList(q.fromMonth, q.toMonth);
-      const out = { months: [], revenue: [], cogs: [], wagesSuper: [], overheads: [], gamingRevenue: [] };
+      const FIELDS = ['revenue', 'cogs', 'wagesSuper', 'overheads', 'gamingRevenue'].concat(centreKeys());
+      const out = { months: [] };
+      FIELDS.forEach((k) => { out[k] = []; });
       const byMonth = {};
       for (let end = months.length; end > 0; end -= 12) {
         const start = Math.max(0, end - 12);
@@ -126,7 +128,7 @@ const ADAPTERS = {
       months.forEach((mo) => {
         const f = byMonth[mo];
         out.months.push(mo);
-        ['revenue', 'cogs', 'wagesSuper', 'overheads', 'gamingRevenue'].forEach((k) => out[k].push(f ? f[k] : null));
+        FIELDS.forEach((k) => out[k].push(f && f[k] !== undefined ? f[k] : null));
       });
       return out;
     }
@@ -253,18 +255,51 @@ async function xeroPnl(env, h, params, ttl) {
 
 /* Turn a P&L report into n columns (column 0 = first amount column, which for a
    multi-period report is the NEWEST month). Each column: { figures, lines }. */
+/* ---------------- Cost centres (owner's management view, 8 Oct 2026) ----
+   Exact Xero account names per cost centre, as given by the owner. Matching
+   ignores case, extra spaces and dash style. Department wage accounts are not
+   split in Xero yet: when they are, list them under `wages` and the tiles light
+   up. F&B wages use ALL staff wages until then ('ALL_STAFF'). */
+const CENTRES = {
+  fb: {
+    sales: ['Sales - Chard Bar', 'Sales - Chard Restaurant', 'Sales - Coffee Shop', 'Sales - Gaming Bar', 'Sales - Plantation Bar', 'Sales - Tapd', 'Sales - Tapd (Food)'],
+    cogs: ['COGS - Chard Restaurant (Food)', 'COGS - Coffee Shop', 'COGS - Coffee Shop Cakes', 'COGS - Tapd', 'COGS - Tapd (Food)', 'Wastage'],
+    wages: 'ALL_STAFF'
+  },
+  kitchen: {
+    sales: ['Sales - Chard Restaurant', 'Sales - Coffee Shop', 'Sales - Tapd (Food)'],
+    cogs: ['COGS - Chard Restaurant (Food)', 'COGS - Coffee Shop', 'COGS - Coffee Shop Cakes', 'COGS - Tapd', 'COGS - Tapd (Food)', 'Wastage'],
+    wages: [] /* waiting on Xero: kitchen wages + super accounts */
+  },
+  retail: {
+    sales: ['Sales - Ripley DBS'],
+    cogs: ['COGS - Ripley St'],
+    wages: [] /* waiting on Xero: Ripley DBS wages + super accounts */
+  },
+  gaming: {
+    sales: ['Gaming Machines Income', 'Keno Income'],
+    cogs: ['Gaming - State Tax', 'Gaming Monitoring Fees'],
+    wages: null /* no wage tile for gaming */
+  }
+};
+function normName(s) {
+  return String(s || '').toLowerCase().replace(/[–—−]/g, '-').replace(/\s*-\s*/g, ' - ').replace(/\s+/g, ' ').trim();
+}
+const ALL_CENTRE_COGS = {};
+Object.keys(CENTRES).forEach((k) => CENTRES[k].cogs.forEach((n) => { ALL_CENTRE_COGS[normName(n)] = true; }));
+function centreKeys() {
+  const keys = [];
+  Object.keys(CENTRES).forEach((k) => { keys.push(k + '_sales', k + '_cogs'); if (CENTRES[k].wages !== null) keys.push(k + '_wages'); });
+  return keys;
+}
+
 function xeroColumns(rep, n) {
-  /* Owner's choice (7 Oct 2026, marked deviation from kpi-spec metric 4):
-     Cost of goods = the P&L lines named "COGS" added together, wherever they
-     sit (Cost of Sales or Operating Expenses). Any other Cost of Sales line
-     counts in Overheads instead, so Profit still matches the P&L. If the books
-     have no "COGS"-named lines at all, fall back to the Cost of Sales total. */
-  const useNamed = (rep.Rows || []).some((sec) => {
-    const k = sec.RowType === 'Section' ? classifySection(sec.Title) : null;
-    return (k === 'cogs' || k === 'opex') && (sec.Rows || []).some((r) => r.RowType === 'Row' && COGS_RE.test(r.Cells && r.Cells[0] ? r.Cells[0].Value : ''));
-  });
+  /* Overall Cost of goods (owner's choice): every line named in a cost
+     centre's COGS list, plus any other line named "COGS", wherever it sits.
+     Everything else in Cost of Sales + Operating Expenses that is not COGS or
+     staff wages is Overheads, so Revenue - COGS - wages - Overheads = the P&L. */
   const cols = [];
-  for (let i = 0; i < n; i++) cols.push({ c: { revenue: 0, cogsSection: 0, cogsNamed: 0, wages: 0, opex: 0, gaming: 0 }, lines: [] });
+  for (let i = 0; i < n; i++) cols.push({ c: { revenue: 0, cogsSection: 0, cogsAll: 0, wages: 0, opex: 0, gaming: 0 }, byName: {}, lines: [] });
   (rep.Rows || []).forEach((sec) => {
     if (sec.RowType !== 'Section') return;
     const cls = classifySection(sec.Title);
@@ -278,13 +313,15 @@ function xeroColumns(rep, n) {
       const total = summary ? amt(summary) : detail.reduce((s, r) => s + amt(r), 0);
       detail.forEach((r) => {
         const label = r.Cells && r.Cells[0] ? r.Cells[0].Value : '';
+        const key = normName(label);
+        col.byName[key] = (col.byName[key] || 0) + amt(r);
         let as = cls;
-        const named = useNamed && (cls === 'cogs' || cls === 'opex') && COGS_RE.test(label);
-        if (named) { as = 'cogs'; col.c.cogsNamed += amt(r); }
+        const isCogs = (cls === 'cogs' || cls === 'opex') && (ALL_CENTRE_COGS[key] || COGS_RE.test(label));
+        if (isCogs) { as = 'cogs'; col.c.cogsAll += amt(r); }
         else if (cls === 'opex' && isWageLine(label)) { as = 'wages'; col.c.wages += amt(r); }
-        else if (cls === 'cogs' && useNamed) { as = 'opex'; }
+        else if (cls === 'cogs') { as = 'opex'; }
         if (cls === 'revenue' && GAMING_RE.test(label)) col.c.gaming += amt(r);
-        if (i === 0) col.lines.push({ section: sec.Title, label: label, as: as, cents: amt(r), wageLike: cls === 'cogs' && WAGE_RE.test(label) });
+        if (i === 0) col.lines.push({ section: sec.Title, label: label, key: key, as: as, cents: amt(r), wageLike: cls === 'cogs' && WAGE_RE.test(label) });
       });
       if (cls === 'revenue') col.c.revenue += total;
       if (cls === 'cogs') col.c.cogsSection += total;
@@ -293,20 +330,23 @@ function xeroColumns(rep, n) {
   });
   return cols.map((col) => {
     const c = col.c;
-    const cogs = useNamed ? c.cogsNamed : c.cogsSection;
-    /* Everything in Cost of Sales + Operating Expenses that is not COGS or staff
-       wages is Overheads, so Revenue - COGS - wages - Overheads = the P&L. */
-    const overheads = c.cogsSection + c.opex - cogs - c.wages;
-    return {
-      lines: col.lines,
-      figures: {
-        revenue: c.revenue / 100,
-        cogs: cogs / 100,
-        wagesSuper: c.wages / 100,
-        overheads: overheads / 100,
-        gamingRevenue: c.gaming / 100
-      }
+    const sum = (names) => names.reduce((s, nm) => s + (col.byName[normName(nm)] || 0), 0);
+    const overheads = c.cogsSection + c.opex - c.cogsAll - c.wages;
+    const figures = {
+      revenue: c.revenue / 100,
+      cogs: c.cogsAll / 100,
+      wagesSuper: c.wages / 100,
+      overheads: overheads / 100,
+      gamingRevenue: c.gaming / 100
     };
+    Object.keys(CENTRES).forEach((k) => {
+      const ce = CENTRES[k];
+      figures[k + '_sales'] = sum(ce.sales) / 100;
+      figures[k + '_cogs'] = sum(ce.cogs) / 100;
+      if (ce.wages === 'ALL_STAFF') figures[k + '_wages'] = c.wages / 100;
+      else if (Array.isArray(ce.wages)) figures[k + '_wages'] = ce.wages.length ? sum(ce.wages) / 100 : null;
+    });
+    return { lines: col.lines, byName: col.byName, figures: figures };
   });
 }
 
@@ -335,6 +375,21 @@ async function accountsPage(env, url) {
       if (!ls.length) return;
       body += '<h2>' + g[1] + '</h2><table>' + ls.map((l) => '<tr><td>' + escHtml(l.label) + (l.wageLike ? ' <em>(sits in Cost of Sales)</em>' : '') + (l.as === 'revenue' && GAMING_RE.test(l.label) ? ' <em>(gaming/keno: left out of the excl.-gaming percentages)</em>' : '') + '</td><td>' + money(l.cents) + '</td></tr>').join('') + '</table>';
     });
+    const CENTRE_NAMES = { fb: 'F&B', kitchen: 'Kitchen', retail: 'Retail', gaming: 'Gaming' };
+    body += '<h1 style="margin-top:2.4rem">Cost centres</h1><p>Each tile group adds up exactly these Xero lines. "Not found" means no line with that exact name has an amount for these dates; check the spelling against your Xero account name.</p>';
+    const allSales = {};
+    Object.keys(CENTRES).forEach((k) => {
+      const ce = CENTRES[k];
+      ce.sales.forEach((nm) => { allSales[normName(nm)] = true; });
+      const row = (nm) => { const v = col.byName[normName(nm)]; return '<tr><td>' + escHtml(nm) + '</td><td>' + (v === undefined ? '<em>not found</em>' : money(v)) + '</td></tr>'; };
+      body += '<h2>' + CENTRE_NAMES[k] + '</h2><table><tr><td colspan="2"><b>Sales</b></td></tr>' + ce.sales.map(row).join('') + '<tr><td colspan="2"><b>Cost of goods</b></td></tr>' + ce.cogs.map(row).join('');
+      if (ce.wages === 'ALL_STAFF') body += '<tr><td colspan="2"><b>Wages and super</b>: all staff wages and super (until the department split is in Xero)</td></tr>';
+      else if (Array.isArray(ce.wages) && !ce.wages.length) body += '<tr><td colspan="2"><b>Wages and super</b>: <em>waiting for these accounts to be split out in Xero</em></td></tr>';
+      else if (Array.isArray(ce.wages)) body += '<tr><td colspan="2"><b>Wages and super</b></td></tr>' + ce.wages.map(row).join('');
+      body += '</table>';
+    });
+    const unassigned = col.lines.filter((l) => l.as === 'revenue' && !allSales[l.key]);
+    if (unassigned.length) body += '<h2>Income lines not in any cost centre</h2><p>These count in overall Revenue only.</p><table>' + unassigned.map((l) => '<tr><td>' + escHtml(l.label) + '</td><td>' + money(l.cents) + '</td></tr>').join('') + '</table>';
     const f = col.figures;
     body += '<h2>Totals</h2><table><tr><td>Revenue</td><td>' + money(Math.round(f.revenue * 100)) + '</td></tr><tr><td>Cost of goods</td><td>' + money(Math.round(f.cogs * 100)) + '</td></tr><tr><td>Wages and super</td><td>' + money(Math.round(f.wagesSuper * 100)) + '</td></tr><tr><td>Overheads</td><td>' + money(Math.round(f.overheads * 100)) + '</td></tr></table>';
   } catch (e) {

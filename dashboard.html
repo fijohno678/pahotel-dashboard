@@ -245,6 +245,14 @@ body {
 .tbar { cursor: default; }
 .tbar:hover { opacity: 0.78; }
 .mcard.alert { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
+/* Cost-centre sections: coloured heading + a strip and faint tint on each tile */
+.sec-head { --sec: #0D0D0D; display: flex; align-items: center; gap: 9px; margin: 1.5rem 0 0.7rem; }
+.sec-head:first-of-type { margin-top: 0.4rem; }
+.sec-dot { width: 12px; height: 12px; border-radius: 3px; background: var(--sec); }
+.sec-name { font-family: 'Khand', sans-serif; font-size: 20px; font-weight: 600; color: var(--sec); letter-spacing: 0.02em; }
+.mcard[data-sec] { background: linear-gradient(var(--sec-tint), var(--sec-tint)), #fffdf9; }
+.mcard[data-sec]::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 4px; background: var(--sec); }
+.mcard[data-sec] .m-label { color: var(--sec); }
 </style>
 </head>
 <body>
@@ -271,12 +279,11 @@ var KIT_CONFIG = {
     "rostering": "Tanda"
   },
   "metrics": [
-    "revenueFB",
-    "cogs",
-    "wage",
-    "revenue",
-    "overheads",
-    "profit"
+    "fbSales", "fbCogs", "fbWage",
+    "kSales", "kCogs", "kWage",
+    "rSales", "rCogs", "rWage",
+    "gSales", "gCogs",
+    "revenue", "cogs", "wage", "overheads", "profit"
   ],
   "startLevel": "live",
   "kitDate": "October 2026",
@@ -348,6 +355,43 @@ var METRIC_DEFS = {
   revenue:      { label: 'Revenue', fmt: 'money', needs: ['accounting'], goodDir: 'up', benchmark: true,
                   def: 'All trading income, ' + KIT_CONFIG.taxLabel + ' · from ' + P.accounting,
                   decision: 'Is the top line growing? Sets the base every other number is judged against.' },
+  /* ---- Cost-centre tiles (owner's management view, 8 Oct 2026). Account
+     lists live in worker.js CENTRES; these are the owner's own measures. ---- */
+  fbSales: { section: 'fb', label: 'Revenue (F&B)', fmt: 'money', valueKey: 'fb_sales', needs: ['accounting'], goodDir: 'up',
+             def: 'Sales - Chard Bar, Chard Restaurant, Coffee Shop, Gaming Bar, Plantation Bar, Tapd and Tapd (Food) · ' + KIT_CONFIG.taxLabel,
+             check: 'Add up those seven Sales lines in your profit and loss for these dates.' },
+  fbCogs:  { section: 'fb', label: 'Cost of goods (F&B)', fmt: 'pct', dual: true, dollarsKey: 'fb_cogs', baseKey: 'fb_sales', needs: ['accounting'], goodDir: 'down',
+             def: 'COGS - Chard Restaurant (Food), Coffee Shop, Coffee Shop Cakes, Tapd, Tapd (Food) and Wastage ÷ F&B revenue',
+             check: 'Add up those six COGS lines (including Wastage), then divide by Revenue (F&B).' },
+  fbWage:  { section: 'fb', label: 'Wage % (F&B)', fmt: 'pct', dual: true, dollarsKey: 'fb_wages', baseKey: 'fb_sales', needs: ['accounting'], goodDir: 'down',
+             def: 'Staff wages plus super ÷ F&B revenue. Uses ALL staff wages until the department split is set up in Xero.',
+             check: 'Add your staff wages and super lines (not Johnson), then divide by Revenue (F&B).' },
+  kSales:  { section: 'kitchen', label: 'Revenue (Kitchen)', fmt: 'money', valueKey: 'kitchen_sales', needs: ['accounting'], goodDir: 'up',
+             def: 'Food sales: Sales - Chard Restaurant, Coffee Shop and Tapd (Food) · ' + KIT_CONFIG.taxLabel,
+             check: 'Add up those three Sales lines in your profit and loss for these dates.' },
+  kCogs:   { section: 'kitchen', label: 'Cost of goods (Kitchen)', fmt: 'pct', dual: true, dollarsKey: 'kitchen_cogs', baseKey: 'kitchen_sales', needs: ['accounting'], goodDir: 'down',
+             def: 'COGS - Chard Restaurant (Food), Coffee Shop, Coffee Shop Cakes, Tapd, Tapd (Food) and Wastage ÷ Kitchen revenue (food sales only)',
+             check: 'Add up those six COGS lines, then divide by Revenue (Kitchen).' },
+  kWage:   { section: 'kitchen', label: 'Wage % (Kitchen)', fmt: 'pct', dual: true, dollarsKey: 'kitchen_wages', baseKey: 'kitchen_sales', needs: ['accounting'], goodDir: 'down',
+             def: 'Kitchen wages plus super ÷ Kitchen revenue',
+             pending: 'Waiting for kitchen wages and super to be split out in Xero.',
+             check: 'Add your kitchen wages and super lines, then divide by Revenue (Kitchen).' },
+  rSales:  { section: 'retail', label: 'Revenue (Retail)', fmt: 'money', valueKey: 'retail_sales', needs: ['accounting'], goodDir: 'up',
+             def: 'Sales - Ripley DBS · ' + KIT_CONFIG.taxLabel,
+             check: 'Check the Sales - Ripley DBS line in your profit and loss for these dates.' },
+  rCogs:   { section: 'retail', label: 'Cost of goods (Retail)', fmt: 'pct', dual: true, dollarsKey: 'retail_cogs', baseKey: 'retail_sales', needs: ['accounting'], goodDir: 'down',
+             def: 'COGS - Ripley St ÷ Retail revenue',
+             check: 'Take the COGS - Ripley St line and divide by Revenue (Retail).' },
+  rWage:   { section: 'retail', label: 'Wages & salaries (Retail)', fmt: 'pct', dual: true, dollarsKey: 'retail_wages', baseKey: 'retail_sales', needs: ['accounting'], goodDir: 'down',
+             def: 'Ripley DBS wages plus super ÷ Retail revenue',
+             pending: 'Waiting for Ripley DBS wages and super to be split out in Xero.',
+             check: 'Add your Ripley DBS wages and super lines, then divide by Revenue (Retail).' },
+  gSales:  { section: 'gaming', label: 'Revenue (Gaming)', fmt: 'money', valueKey: 'gaming_sales', needs: ['accounting'], goodDir: 'up',
+             def: 'Gaming Machines Income plus Keno Income · ' + KIT_CONFIG.taxLabel,
+             check: 'Add Gaming Machines Income and Keno Income for these dates.' },
+  gCogs:   { section: 'gaming', label: 'Cost of goods (Gaming)', fmt: 'pct', dual: true, dollarsKey: 'gaming_cogs', baseKey: 'gaming_sales', needs: ['accounting'], goodDir: 'down',
+             def: 'Gaming - State Tax plus Gaming Monitoring Fees ÷ Gaming revenue',
+             check: 'Add Gaming - State Tax and Gaming Monitoring Fees, then divide by Revenue (Gaming).' },
   revenueFB:    { label: 'Revenue (F&B)', fmt: 'money', needs: ['accounting'], goodDir: 'up',
                   def: 'Your extra measure: all trading income, ' + KIT_CONFIG.taxLabel + ', less Gaming Machines and Keno income · from ' + P.accounting + '. The Revenue card is unchanged.',
                   decision: 'Is food and beverage trade growing on its own, separate from gaming?' },
@@ -357,11 +401,11 @@ var METRIC_DEFS = {
   acs:          { label: 'Average customer spend', fmt: 'money2', needs: ['accounting', 'pos'], goodDir: 'up',
                   def: 'Revenue (' + P.accounting + ', ' + KIT_CONFIG.taxLabel + ') ÷ transactions (' + P.pos + ')',
                   decision: 'Are upsells and pricing working? Move it with specials, bundles and staff prompts.' },
-  cogs:         { label: 'Cost of goods (F&B)', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
-                  def: 'Your own definition (differs from the standard kit): your COGS lines added together, ' + KIT_CONFIG.taxLabel + ', as a % of revenue without Gaming Machines and Keno income · from ' + P.accounting,
+  cogs:         { label: 'Cost of goods', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
+                  def: 'Your own definition (differs from the standard kit): every cost centre\u2019s COGS lines plus any other line named COGS, ' + KIT_CONFIG.taxLabel + ', as a % of all revenue · from ' + P.accounting,
                   decision: 'Rising as a share of revenue? Check supplier prices, portioning and waste.' },
-  wage:         { label: 'Wage % (F&B)', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
-                  def: 'Your own definition (differs from the standard kit): staff wages plus super (owners\u2019 pay excluded) ÷ revenue without Gaming Machines and Keno income · from ' + P.accounting,
+  wage:         { label: 'Wage %', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
+                  def: 'All staff wages plus super (owners\u2019 pay is in Overheads) ÷ all revenue · from ' + P.accounting,
                   decision: 'Rostered to your trade? Over target means trim hours or lift sales per shift.' },
   cogsExGaming: { label: 'Cost of goods % (excl. gaming)', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
                   def: 'Your extra measure: Cost of Sales ÷ revenue without Gaming Machines Income · from ' + P.accounting + '. The standard Cost of goods card is unchanged.',
@@ -369,7 +413,7 @@ var METRIC_DEFS = {
   wageExGaming: { label: 'Wage % (excl. gaming)', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
                   def: 'Your extra measure: wages plus super ÷ revenue without Gaming Machines Income · from ' + P.accounting + '. The standard Wage % card is unchanged.',
                   decision: 'Labour against the trade your staff actually serve, with gaming set aside.' },
-  overheads:    { label: 'Overheads', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
+  overheads:    { label: 'Overheads', defNote: true, fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
                   def: 'Operating expenses excluding wages, super and cost of sales · from ' + P.accounting,
                   decision: 'Fixed costs drifting up? Review subscriptions, utilities and new recurring spend.' },
   profit:       { label: 'Profit', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'up',
@@ -377,6 +421,15 @@ var METRIC_DEFS = {
                   decision: 'What the venue keeps after the costs you control. The bottom line of the board.' }
 };
 var CHOSEN = KIT_CONFIG.metrics.filter(function (k) { return METRIC_DEFS[k]; });
+/* Cost-centre sections (owner's management view): each has its own colour. */
+var SECTIONS = {
+  fb:      { label: 'Food & beverage', color: '#0E8A6E', tint: 'rgba(14,138,110,0.05)' },
+  kitchen: { label: 'Kitchen',         color: '#B5541C', tint: 'rgba(181,84,28,0.05)' },
+  retail:  { label: 'Retail',          color: '#5C3DB0', tint: 'rgba(92,61,176,0.05)' },
+  gaming:  { label: 'Gaming',          color: '#1A5FB4', tint: 'rgba(26,95,180,0.05)' },
+  overall: { label: 'Whole business',  color: '#0D0D0D', tint: 'rgba(13,13,13,0.025)' }
+};
+var SECTION_ORDER = ['fb', 'kitchen', 'retail', 'gaming', 'overall'];
 
 var SOURCES = [
   { key: 'accounting', name: P.accounting, role: 'Money figures (' + KIT_CONFIG.taxLabel + ')' },
@@ -604,6 +657,7 @@ function periodValues(slot) {  /* slot: 'cur' | 'prev' | 'yoy' */
   }
   if (pos) out.count = num(pos.count);
   if (ros) out.rosteredCost = num(ros.cost);
+  if (acc) { for (var ak in acc) { if (!(ak in out)) out[ak] = num(acc[ak]); } }
   return out;
 }
 function num(v) { return (typeof v === 'number' && isFinite(v)) ? v : null; }
@@ -616,6 +670,7 @@ function profitDollars(vals) {
 }
 /* The dollar amount behind a dual (share-of-revenue) metric. */
 function shareDollars(key, vals) {
+  if (METRIC_DEFS[key] && METRIC_DEFS[key].dollarsKey) return (vals[METRIC_DEFS[key].dollarsKey] == null) ? null : vals[METRIC_DEFS[key].dollarsKey];
   if (key === 'cogs' || key === 'cogsExGaming') return vals.cogs;
   if (key === 'overheads') return vals.overheads;
   if (key === 'wage' || key === 'wageExGaming') return vals.wagesSuper;
@@ -632,7 +687,8 @@ function revenueExGaming(vals) {
 function sharePct(key, vals) {
   /* Owner's choice (7 Oct 2026): the Cost of goods card itself uses revenue
      without gaming/keno - a marked deviation from kpi-spec metric 4. */
-  var base = (key === 'wage' || key === 'wageExGaming' || key === 'cogsExGaming' || key === 'cogs') ? revenueExGaming(vals) : vals.revenue;
+  var cdef = METRIC_DEFS[key];
+  var base = (cdef && cdef.baseKey) ? vals[cdef.baseKey] : ((key === 'wageExGaming' || key === 'cogsExGaming') ? revenueExGaming(vals) : vals.revenue);
   if (base == null || base === 0) return null;
   var d = shareDollars(key, vals);
   if (d == null) return null;
@@ -652,6 +708,9 @@ function fmtTarget(key, t) {
 
 /* metric value for a slot; null = no data; 'zero-count' handled by caller */
 function metricValue(key, vals) {
+  var mdef = METRIC_DEFS[key];
+  if (mdef && mdef.valueKey) return (vals[mdef.valueKey] == null) ? null : vals[mdef.valueKey];
+  if (mdef && mdef.dollarsKey) return sharePct(key, vals);
   if (key === 'revenue') return vals.revenue;
   if (key === 'revenueFB') return revenueExGaming(vals);
   if (key === 'transactions') return vals.count;
@@ -659,11 +718,8 @@ function metricValue(key, vals) {
   if (key === 'overheads') return vals.overheads;
   if (key === 'profit') return profitDollars(vals);
   if (key === 'wage') {
-    /* Owner's choice (8 Oct 2026): Wage % uses revenue without gaming/keno -
-       a marked deviation from kpi-spec metric 5. */
-    var rw = revenueExGaming(vals);
-    if (vals.wagesSuper == null || rw == null || rw === 0) return null;
-    return (vals.wagesSuper / rw) * 100;
+    if (vals.wagesSuper == null || vals.revenue == null || vals.revenue === 0) return null;
+    return (vals.wagesSuper / vals.revenue) * 100;
   }
   if (key === 'cogsExGaming') {
     var rc = revenueExGaming(vals);
@@ -914,10 +970,26 @@ function renderDashboard(root) {
   }
 
   /* Cards */
-  var grid = el('div', 'cards');
   var cur = periodValues('cur'), prev = periodValues('prev'), yoy = periodValues('yoy');
-  CHOSEN.forEach(function (k) { grid.appendChild(metricCard(k, cur, prev, yoy, r)); });
-  root.appendChild(grid);
+  SECTION_ORDER.forEach(function (sk) {
+    var keys = CHOSEN.filter(function (k) { return (METRIC_DEFS[k].section || 'overall') === sk; });
+    if (!keys.length) return;
+    var meta = SECTIONS[sk];
+    var head = el('div', 'sec-head');
+    head.style.setProperty('--sec', meta.color);
+    head.appendChild(el('span', 'sec-dot'));
+    head.appendChild(el('span', 'sec-name', esc(meta.label)));
+    root.appendChild(head);
+    var grid = el('div', 'cards sec-grid');
+    keys.forEach(function (k) {
+      var card = metricCard(k, cur, prev, yoy, r);
+      card.setAttribute('data-sec', sk);
+      card.style.setProperty('--sec', meta.color);
+      card.style.setProperty('--sec-tint', meta.tint);
+      grid.appendChild(card);
+    });
+    root.appendChild(grid);
+  });
 }
 
 function periodLabel() {
@@ -958,6 +1030,7 @@ function metricCard(key, cur, prev, yoy, r) {
   } else {
     card.appendChild(headline(key, cur, v));
     if (key === 'acs' && v === 'dash') card.appendChild(el('div', 'm-sub', 'No transactions in this period'));
+    if (def.pending && shareDollars(key, cur) == null) card.appendChild(el('div', 'm-sub', esc(def.pending)));
     if (key === 'wage' && P.rostering && cur.rosteredCost != null && cur.revenue != null && cur.revenue !== 0) {
       var pj = ((cur.rosteredCost / cur.revenue) * 100).toFixed(1);
       var ps = el('div', 'm-sub');
@@ -1018,7 +1091,14 @@ function trendSeries(key) {
   var acc = d.trend.accounting || {};
   var pos = d.trend.pos || {};
   function at(arr, i) { return (arr && arr[i] != null) ? arr[i] : null; }
+  var tdef = METRIC_DEFS[key];
   function val(i) {
+    if (tdef && (tdef.valueKey || tdef.dollarsKey)) {
+      var vi = {};
+      for (var tk in acc) vi[tk] = at(acc[tk], i);
+      var pv = primaryFigure(key, vi);
+      return (pv == null || pv === 'dash') ? null : pv;
+    }
     var rev = at(acc.revenue, i);
     if (key === 'revenue') return rev;
     if (key === 'revenueFB') return (rev == null) ? null : rev - (at(acc.gamingRevenue, i) || 0);
@@ -1026,9 +1106,9 @@ function trendSeries(key) {
     if (key === 'acs') { var c = at(pos.count, i); return (rev == null || c == null || c === 0) ? null : rev / c; }
     if (rev == null || rev === 0) return null;
     var cg = at(acc.cogs, i), wg = at(acc.wagesSuper, i), oh = at(acc.overheads, i);
-    if (key === 'cogs') { var rcx = rev - (at(acc.gamingRevenue, i) || 0); return (cg == null || rcx === 0) ? null : (cg / rcx) * 100; }
+    if (key === 'cogs') return (cg == null) ? null : (cg / rev) * 100;
     if (key === 'overheads') return (oh == null) ? null : (oh / rev) * 100;
-    if (key === 'wage') { var rwg = rev - (at(acc.gamingRevenue, i) || 0); return (wg == null || rwg === 0) ? null : (wg / rwg) * 100; }
+    if (key === 'wage') return (wg == null) ? null : (wg / rev) * 100;
     if (key === 'cogsExGaming') { var rcg = rev - (at(acc.gamingRevenue, i) || 0); return (cg == null || rcg === 0) ? null : (cg / rcg) * 100; }
     if (key === 'wageExGaming') { var rxg = rev - (at(acc.gamingRevenue, i) || 0); return (wg == null || rxg === 0) ? null : (wg / rxg) * 100; }
     if (key === 'profit') return (cg == null || wg == null || oh == null) ? null : ((rev - cg - wg - oh) / rev) * 100;
@@ -1358,6 +1438,8 @@ function renderRecon(root) {
       inst = 'Open ' + P.pos + ' reporting for exactly these dates. Does the number of completed transactions match the figure above?';
     } else if (k === 'acs') {
       inst = 'This one is worked out from two numbers you’ve already checked: revenue (from ' + P.accounting + ') divided by transactions (from ' + P.pos + '). If both inputs match, this is right by definition.';
+    } else if (def.check) {
+      inst = 'Run your ' + P.accounting + ' profit and loss for exactly these dates. ' + def.check.replace(' in your profit and loss for these dates', '') + ' Does it match the figure above? (This tile counts: ' + def.def + '.)';
     } else if (k === 'revenueFB') {
       inst = 'In your ' + P.accounting + ' profit and loss for these dates, take Total Income and subtract the Gaming Machines and Keno income lines. Does it match the figure above, to the cent?';
     } else if (k === 'cogs') {
