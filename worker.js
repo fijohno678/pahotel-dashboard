@@ -194,6 +194,7 @@ const WAGE_EXCLUDE_RE = /\bjohnson\b/i;
 /* Owner's extra metric (7 Oct 2026): Wage % (excl. gaming) divides by revenue
    less these Income lines. Revenue itself is unchanged. */
 const GAMING_RE = /\b(gaming|keno)\b/i; /* Gaming Machines + Keno income */
+const COGS_RE = /\bcogs\b/i; /* owner's Cost of goods = lines named "COGS" */
 function isWageLine(label) {
   if (WAGE_EXCLUDE_RE.test(label || '')) return false;
   if (Array.isArray(WAGE_ACCOUNTS_CONFIRMED)) {
@@ -253,8 +254,17 @@ async function xeroPnl(env, h, params, ttl) {
 /* Turn a P&L report into n columns (column 0 = first amount column, which for a
    multi-period report is the NEWEST month). Each column: { figures, lines }. */
 function xeroColumns(rep, n) {
+  /* Owner's choice (7 Oct 2026, marked deviation from kpi-spec metric 4):
+     Cost of goods = the P&L lines named "COGS" added together, wherever they
+     sit (Cost of Sales or Operating Expenses). Any other Cost of Sales line
+     counts in Overheads instead, so Profit still matches the P&L. If the books
+     have no "COGS"-named lines at all, fall back to the Cost of Sales total. */
+  const useNamed = (rep.Rows || []).some((sec) => {
+    const k = sec.RowType === 'Section' ? classifySection(sec.Title) : null;
+    return (k === 'cogs' || k === 'opex') && (sec.Rows || []).some((r) => r.RowType === 'Row' && COGS_RE.test(r.Cells && r.Cells[0] ? r.Cells[0].Value : ''));
+  });
   const cols = [];
-  for (let i = 0; i < n; i++) cols.push({ c: { revenue: 0, cogs: 0, wages: 0, opex: 0, gaming: 0 }, seen: {}, lines: [] });
+  for (let i = 0; i < n; i++) cols.push({ c: { revenue: 0, cogsSection: 0, cogsNamed: 0, wages: 0, opex: 0, gaming: 0 }, lines: [] });
   (rep.Rows || []).forEach((sec) => {
     if (sec.RowType !== 'Section') return;
     const cls = classifySection(sec.Title);
@@ -269,23 +279,35 @@ function xeroColumns(rep, n) {
       detail.forEach((r) => {
         const label = r.Cells && r.Cells[0] ? r.Cells[0].Value : '';
         let as = cls;
-        if (cls === 'opex' && isWageLine(label)) { as = 'wages'; col.c.wages += amt(r); }
+        const named = useNamed && (cls === 'cogs' || cls === 'opex') && COGS_RE.test(label);
+        if (named) { as = 'cogs'; col.c.cogsNamed += amt(r); }
+        else if (cls === 'opex' && isWageLine(label)) { as = 'wages'; col.c.wages += amt(r); }
+        else if (cls === 'cogs' && useNamed) { as = 'opex'; }
         if (cls === 'revenue' && GAMING_RE.test(label)) col.c.gaming += amt(r);
         if (i === 0) col.lines.push({ section: sec.Title, label: label, as: as, cents: amt(r), wageLike: cls === 'cogs' && WAGE_RE.test(label) });
       });
-      if (cls === 'revenue' || cls === 'cogs' || cls === 'opex') { col.c[cls] += total; col.seen[cls] = true; }
+      if (cls === 'revenue') col.c.revenue += total;
+      if (cls === 'cogs') col.c.cogsSection += total;
+      if (cls === 'opex') col.c.opex += total;
     }
   });
-  return cols.map((col) => ({
-    lines: col.lines,
-    figures: {
-      revenue: col.c.revenue / 100,
-      cogs: col.c.cogs / 100,
-      wagesSuper: col.c.wages / 100,
-      overheads: (col.c.opex - col.c.wages) / 100,
-      gamingRevenue: col.c.gaming / 100
-    }
-  }));
+  return cols.map((col) => {
+    const c = col.c;
+    const cogs = useNamed ? c.cogsNamed : c.cogsSection;
+    /* Everything in Cost of Sales + Operating Expenses that is not COGS or staff
+       wages is Overheads, so Revenue - COGS - wages - Overheads = the P&L. */
+    const overheads = c.cogsSection + c.opex - cogs - c.wages;
+    return {
+      lines: col.lines,
+      figures: {
+        revenue: c.revenue / 100,
+        cogs: cogs / 100,
+        wagesSuper: c.wages / 100,
+        overheads: overheads / 100,
+        gamingRevenue: c.gaming / 100
+      }
+    };
+  });
 }
 
 /* Owner-readable page: how each line of their Xero P&L is counted. Used at
