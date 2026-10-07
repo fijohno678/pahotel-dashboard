@@ -187,7 +187,12 @@ class NotConfigured extends Error {
    account names in WAGE_ACCOUNTS_CONFIRMED and that list wins over keywords. */
 const WAGE_RE = /\b(wages?|salar(y|ies)|superannuation|super|payroll|annual leave|long service|workcover|workers'? comp(ensation)?)\b/i;
 const WAGE_ACCOUNTS_CONFIRMED = null; /* e.g. ['Wages and Salaries', 'Superannuation'] */
+/* Owner decision (7 Oct 2026): the owners' pay ("Johnson Wages", "Johnson
+   Superannuation") is NOT staff labour. It is kept out of Wage % and counted in
+   Overheads, so Profit still matches the P&L. */
+const WAGE_EXCLUDE_RE = /\bjohnson\b/i;
 function isWageLine(label) {
+  if (WAGE_EXCLUDE_RE.test(label || '')) return false;
   if (Array.isArray(WAGE_ACCOUNTS_CONFIRMED)) {
     const l = String(label || '').trim().toLowerCase();
     return WAGE_ACCOUNTS_CONFIRMED.some((a) => a.trim().toLowerCase() === l);
