@@ -273,6 +273,7 @@ var KIT_CONFIG = {
   "metrics": [
     "revenue",
     "cogs",
+    "cogsExGaming",
     "wage",
     "wageExGaming",
     "overheads",
@@ -311,7 +312,7 @@ function defaultSettings() {
     timezone: TZ_DEFAULTS[KIT_CONFIG.region] || 'Australia/Sydney',
     accent: 'gold',
     dataMode: KIT_CONFIG.startLevel === 'manual' ? 'manual' : 'live',
-    targets: { cogs: 30, wage: 30, wageExGaming: 30, overheads: 30, profit: 10 }
+    targets: { cogs: 30, cogsExGaming: 30, wage: 30, wageExGaming: 30, overheads: 30, profit: 10 }
   };
 }
 function loadSettings() {
@@ -360,6 +361,9 @@ var METRIC_DEFS = {
   wage:         { label: 'Wage %', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
                   def: 'Wages plus super ÷ revenue · from ' + P.accounting,
                   decision: 'Rostered to your trade? Over target means trim hours or lift sales per shift.' },
+  cogsExGaming: { label: 'Cost of goods % (excl. gaming)', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
+                  def: 'Your extra measure: Cost of Sales ÷ revenue without Gaming Machines Income · from ' + P.accounting + '. The standard Cost of goods card is unchanged.',
+                  decision: 'Food and drink margin without gaming diluting it. Rising? Check supplier prices, portioning and waste.' },
   wageExGaming: { label: 'Wage % (excl. gaming)', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
                   def: 'Your extra measure: wages plus super ÷ revenue without Gaming Machines Income · from ' + P.accounting + '. The standard Wage % card is unchanged.',
                   decision: 'Labour against the trade your staff actually serve, with gaming set aside.' },
@@ -610,7 +614,7 @@ function profitDollars(vals) {
 }
 /* The dollar amount behind a dual (share-of-revenue) metric. */
 function shareDollars(key, vals) {
-  if (key === 'cogs') return vals.cogs;
+  if (key === 'cogs' || key === 'cogsExGaming') return vals.cogs;
   if (key === 'overheads') return vals.overheads;
   if (key === 'wage' || key === 'wageExGaming') return vals.wagesSuper;
   if (key === 'profit') return profitDollars(vals);
@@ -624,7 +628,7 @@ function revenueExGaming(vals) {
 }
 /* The % of revenue a dual metric represents (its primary headline figure). */
 function sharePct(key, vals) {
-  var base = (key === 'wageExGaming') ? revenueExGaming(vals) : vals.revenue;
+  var base = (key === 'wageExGaming' || key === 'cogsExGaming') ? revenueExGaming(vals) : vals.revenue;
   if (base == null || base === 0) return null;
   var d = shareDollars(key, vals);
   if (d == null) return null;
@@ -652,6 +656,11 @@ function metricValue(key, vals) {
   if (key === 'wage') {
     if (vals.wagesSuper == null || vals.revenue == null || vals.revenue === 0) return null;
     return (vals.wagesSuper / vals.revenue) * 100;
+  }
+  if (key === 'cogsExGaming') {
+    var rc = revenueExGaming(vals);
+    if (vals.cogs == null || rc == null || rc === 0) return null;
+    return (vals.cogs / rc) * 100;
   }
   if (key === 'wageExGaming') {
     var rx = revenueExGaming(vals);
@@ -1011,6 +1020,7 @@ function trendSeries(key) {
     if (key === 'cogs') return (cg == null) ? null : (cg / rev) * 100;
     if (key === 'overheads') return (oh == null) ? null : (oh / rev) * 100;
     if (key === 'wage') return (wg == null) ? null : (wg / rev) * 100;
+    if (key === 'cogsExGaming') { var rcg = rev - (at(acc.gamingRevenue, i) || 0); return (cg == null || rcg === 0) ? null : (cg / rcg) * 100; }
     if (key === 'wageExGaming') { var rxg = rev - (at(acc.gamingRevenue, i) || 0); return (wg == null || rxg === 0) ? null : (wg / rxg) * 100; }
     if (key === 'profit') return (cg == null || wg == null || oh == null) ? null : ((rev - cg - wg - oh) / rev) * 100;
     return null;
@@ -1339,6 +1349,8 @@ function renderRecon(root) {
       inst = 'Open ' + P.pos + ' reporting for exactly these dates. Does the number of completed transactions match the figure above?';
     } else if (k === 'acs') {
       inst = 'This one is worked out from two numbers you’ve already checked: revenue (from ' + P.accounting + ') divided by transactions (from ' + P.pos + '). If both inputs match, this is right by definition.';
+    } else if (k === 'cogsExGaming') {
+      inst = 'In your ' + P.accounting + ' profit and loss for these dates, take Total Cost of Sales and divide it by Total Income minus the Gaming Machines Income line. Does it come to the percentage above?';
     } else if (k === 'wageExGaming') {
       inst = 'In your ' + P.accounting + ' profit and loss for these dates, add the staff wages and super lines, then divide by Total Income minus the Gaming Machines Income line. Does it come to the percentage above?';
     } else if (k === 'wage') {
@@ -1398,7 +1410,7 @@ var MANUAL_FIELDS = [
   { key: 'rosteredCost', label: 'Rostered wage cost (optional)', kind: 'money',
     help: 'The rostered wage cost from your roster for these dates. Optional, it powers a projected wage percentage.' }
 ];
-var MANUAL_DEP = { revenue: ['revenue'], transactions: ['count'], acs: ['revenue', 'count'], cogs: ['cogs', 'revenue'], wage: ['wagesSuper', 'revenue'], wageExGaming: ['wagesSuper', 'revenue'], overheads: ['overheads', 'revenue'], profit: ['revenue', 'cogs', 'wagesSuper', 'overheads'] };
+var MANUAL_DEP = { revenue: ['revenue'], transactions: ['count'], acs: ['revenue', 'count'], cogs: ['cogs', 'revenue'], cogsExGaming: ['cogs', 'revenue'], wage: ['wagesSuper', 'revenue'], wageExGaming: ['wagesSuper', 'revenue'], overheads: ['overheads', 'revenue'], profit: ['revenue', 'cogs', 'wagesSuper', 'overheads'] };
 function manualNeededFieldKeys() {
   var set = {};
   CHOSEN.forEach(function (k) { (MANUAL_DEP[k] || []).forEach(function (f) { set[f] = true; }); });
