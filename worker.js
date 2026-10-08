@@ -345,8 +345,12 @@ function deptTargets(name) {
 async function xeroDeptCategory(env, h) {
   const tenant = await xeroTenant(env, h);
   const key = 'xero:deptcat:' + tenant.id;
+  const tok = await h.getTokens();
+  const stamp = (tok && tok.obtained_at) || '';
   const hit = await env.TOKENS.get(key);
-  if (hit) { try { return JSON.parse(hit); } catch (e) {} }
+  /* A cached result only counts for the same Xero connection: after a
+     Reconnect (new permissions) look again straight away. */
+  if (hit) { try { const c = JSON.parse(hit); if (c.stamp === stamp) return c; } catch (e) {} }
   let pick = null, reason = null;
   try {
     const data = await h.fetchJson('https://api.xero.com/api.xro/2.0/TrackingCategories', { headers: { 'xero-tenant-id': tenant.id, Accept: 'application/json' } });
@@ -359,7 +363,7 @@ async function xeroDeptCategory(env, h) {
       ? 'Xero needs one more read-only permission to see departments. Click Reconnect on the Connections screen.'
       : 'Couldn’t read departments from Xero just now.';
   }
-  const out = pick ? { id: pick.TrackingCategoryID, name: pick.Name, options: (pick.Options || []).map((o) => o.Name) } : { id: null, reason: reason };
+  const out = pick ? { id: pick.TrackingCategoryID, name: pick.Name, options: (pick.Options || []).map((o) => o.Name), stamp: stamp } : { id: null, reason: reason, stamp: stamp };
   try { await env.TOKENS.put(key, JSON.stringify(out), { expirationTtl: pick ? 21600 : 300 }); } catch (e) {}
   return out;
 }
