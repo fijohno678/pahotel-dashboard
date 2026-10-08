@@ -1057,18 +1057,23 @@ function render() {
 }
 
 /* ---------- FOH bonus tracker (from the owner's bonus sheet) ----------
-   Monthly. Bar COGS % = COGS - Tapd / bar sales. FOH labour % = FOH wages
-   (General + Kitchen + Restaurant + Beverage, with super share) / F&B revenue.
-   Tiers: Outstanding 100% / Good 75% / Satisfactory 50% / Unsatisfactory none. */
+   Quarterly. Bar COGS % = COGS - Tapd / bar sales. Wages = F&B Wage %
+   (Beverage + Restaurant wages with super share / F&B revenue), i.e. the
+   Wage % (F&B) tile. Tiers: see BONUS_TIERS. */
+/* Owner's rules (9 Oct 2026):
+   Bar COGS %: 28% or less = 100%, 29% or less = 75%, 30% or less = 50%, above 30% = 0.
+   Wages (F&B Wage %, the Wage % (F&B) tile): under 24% = 100%, 24-25% = 75%,
+   25-26% = 50%, 26% or more = 0. */
 var BONUS_TIERS = {
-  cogs:  [ { lt: 28, p: 1, name: 'Outstanding' }, { lt: 29, p: 0.75, name: 'Good' }, { lt: 30, p: 0.5, name: 'Satisfactory' } ],
-  wages: [ { lt: 23, p: 1, name: 'Outstanding' }, { lt: 24, p: 0.75, name: 'Good' }, { lt: 25, p: 0.5, name: 'Satisfactory' } ]
+  cogs:  [ { max: 28, inclusive: true, p: 1 }, { max: 29, inclusive: true, p: 0.75 }, { max: 30, inclusive: true, p: 0.5 } ],
+  wages: [ { max: 24, inclusive: false, p: 1 }, { max: 25, inclusive: false, p: 0.75 }, { max: 26, inclusive: false, p: 0.5 } ]
 };
 function bonusTier(kind, pct) {
   if (pct == null) return null;
+  var v = Math.round(pct * 10) / 10; /* judge on the one-decimal figure shown */
   var ts = BONUS_TIERS[kind];
-  for (var i = 0; i < ts.length; i++) if (pct < ts[i].lt) return ts[i];
-  return { p: 0, name: 'Unsatisfactory' };
+  for (var i = 0; i < ts.length; i++) if (ts[i].inclusive ? v <= ts[i].max : v < ts[i].max) return ts[i];
+  return { p: 0 };
 }
 var MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 function bonusQuarter() {
@@ -1104,8 +1109,8 @@ function bonusPanel() {
   }
   box.appendChild(el('div', 'bonus-sub', 'Quarter so far — on track for'));
   /* Wages: quarter to date. */
-  var wq = pctOf(bonusSlot('bq'), 'foh_wages', 'fb_sales');
-  box.appendChild(rowFor('Wages', 'wages', wq, b.wages, 'Waiting for department wages', MONTHS_SHORT[bq.start.getUTCMonth()] + '–today'));
+  var wq = pctOf(bonusSlot('bq'), 'fb_wages', 'fb_sales'); /* same as the Wage % (F&B) tile */
+  box.appendChild(rowFor('F&B wages', 'wages', wq, b.wages, 'Waiting for department wages', MONTHS_SHORT[bq.start.getUTCMonth()] + '–today'));
   /* Bar COGS: only months whose stocktake is in. */
   var c1 = bonusSlot('bqc'), c2 = bonusSlot('bqc2'), cp = null, sub = null, note;
   if (c1 && pctOf(c1, 'bar_cogs', 'bar_sales') != null) { cp = pctOf(c1, 'bar_cogs', 'bar_sales'); sub = MONTHS_SHORT[bq.start.getUTCMonth()] + '–' + MONTHS_SHORT[bq.endLast.getUTCMonth()]; }
@@ -1119,7 +1124,7 @@ function bonusPanel() {
   tr.appendChild(el('span', 'bonus-k', 'On track so far'));
   tr.appendChild(el('span', 'bonus-k', '<b>' + esc(fmtMoney(total, false)) + '</b> of ' + esc(fmtMoney(b.wages + b.cogs, false))));
   box.appendChild(tr);
-  box.appendChild(el('div', 'bonus-foot', 'Quarterly bonus: wages ' + esc(fmtMoney(b.wages, false)) + ' (under 23% = 100%), bar COGS ' + esc(fmtMoney(b.cogs, false)) + ' (under 28% = 100%). Customer feedback (' + esc(fmtMoney(b.feedback, false)) + ') isn’t tracked here. Bar COGS counts only months with a completed stocktake.'));
+  box.appendChild(el('div', 'bonus-foot', 'Quarterly bonus: F&B wages ' + esc(fmtMoney(b.wages, false)) + ' (under 24% = 100%, 24\u201325% = 75%, 25\u201326% = 50%), bar COGS ' + esc(fmtMoney(b.cogs, false)) + ' (28% or less = 100%, 29% = 75%, 30% = 50%). Customer feedback (' + esc(fmtMoney(b.feedback, false)) + ') isn’t tracked here. Bar COGS counts only months with a completed stocktake.'));
   return box;
 }
 
