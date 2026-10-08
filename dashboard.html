@@ -373,8 +373,22 @@ function pushShared(obj) {
   if (BOARD) return;
   try { fetch('/api/shared', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj) }); } catch (e) {}
 }
+function sharedPrefs() {
+  return { defaultPeriod: SETTINGS.defaultPeriod, weekStart: SETTINGS.weekStart, rolloverHour: SETTINGS.rolloverHour, timezone: SETTINGS.timezone };
+}
+var PREFS_APPLIED = false;
 function applyShared(sh) {
   if (!sh) return;
+  /* Staff boards follow the owner's period, week start, rollover and timezone. */
+  if (BOARD && sh.prefs && !PREFS_APPLIED) {
+    PREFS_APPLIED = true;
+    var p = sh.prefs, changed = false;
+    ['weekStart', 'rolloverHour', 'timezone', 'defaultPeriod'].forEach(function (k) { if (p[k] != null && SETTINGS[k] !== p[k]) { SETTINGS[k] = p[k]; changed = true; } });
+    if (changed) saveSettings();
+    if (p.defaultPeriod && state.period !== p.defaultPeriod && p.defaultPeriod !== 'custom') { state.period = p.defaultPeriod; setTimeout(function () { fetchData(); }, 0); }
+    else if (changed) setTimeout(function () { fetchData(); }, 0);
+  }
+  if (!BOARD && !sh.prefs) pushShared({ prefs: sharedPrefs() });
   if (sh.targets && typeof sh.targets === 'object') {
     var d = defaultSettings().targets, merged = {};
     for (var k in d) merged[k] = d[k];
@@ -856,10 +870,12 @@ function compare(key, cur, base) {
    to the period being viewed: weeks = days x 52 / 365 (a full year = 52 weeks).
    Percentage targets are not scaled. */
 function isWeeklyTarget(key) { var d = METRIC_DEFS[key]; return !!d && !d.dual && (d.fmt === 'money' || d.fmt === 'money2'); }
+/* A week is 7 days; a full year counts as exactly 52 weeks. */
+function daysToWeeks(days) { return days >= 364 ? 52 * Math.round(days / 365) || 52 : days / 7; }
 function periodWeeks() {
   var r = resolvePeriod(state.period, state.customFrom, state.customTo);
   var days = Math.round((r.to.getTime() - r.from.getTime()) / 86400000) + 1;
-  return days * 52 / 365;
+  return daysToWeeks(days);
 }
 function weeklyTarget(key) {
   var t = SETTINGS.targets && SETTINGS.targets[key];
@@ -936,6 +952,12 @@ function render() {
     b.onclick = function () { state.view = t.key; render(); };
     nav.appendChild(b);
   });
+  if (BOARD && BOARD.owner) {
+    /* Owner only: staff never see this button. */
+    var bk = el('button', 'nav-tab', '\u2190 Back to main dashboard');
+    bk.onclick = function () { window.location.href = '/'; };
+    nav.appendChild(bk);
+  }
   if (BOARD && !BOARD.owner) {
     var lo = el('button', 'nav-tab', 'Log out');
     lo.onclick = function () { fetch('/api/board/' + BOARD.id + '/logout', { method: 'POST' }).then(function () { location.reload(); }); };
@@ -1472,7 +1494,7 @@ function trendBars(key, r) {
     var top = Math.min(vy, zeroY), h = Math.max(1.5, Math.abs(zeroY - vy));
     var cls = 'tbar';
     var tgi = tgt;
-    if (tgt != null && isWeeklyTarget(key)) { var mp = months[i].split('-'); tgi = metricTarget(key, new Date(Date.UTC(+mp[0], +mp[1], 0)).getUTCDate() * 52 / 365); }
+    if (tgt != null && isWeeklyTarget(key)) { var mp = months[i].split('-'); tgi = metricTarget(key, daysToWeeks(new Date(Date.UTC(+mp[0], +mp[1], 0)).getUTCDate())); }
     if (tgi != null) cls += ((def.goodDir === 'down') ? (vals[i] > tgi) : (vals[i] < tgi)) ? ' bad' : ' good';
     if (months[i] === curMonth) cls += ' cur';
     var rect = document.createElementNS(NS, 'rect');
@@ -1847,7 +1869,7 @@ function renderSettings(root) {
     if (SETTINGS.defaultPeriod === p.key) o.selected = true;
     sel.appendChild(o);
   });
-  sel.onchange = function () { SETTINGS.defaultPeriod = sel.value; saveSettings(); };
+  sel.onchange = function () { SETTINGS.defaultPeriod = sel.value; saveSettings(); pushShared({ prefs: sharedPrefs() }); };
   c2.appendChild(sel);
   c2.appendChild(el('div', 'set-note', 'What the dashboard opens on.'));
   grid.appendChild(c2);
@@ -1861,7 +1883,7 @@ function renderSettings(root) {
     if (+SETTINGS.weekStart === i) o.selected = true;
     ws.appendChild(o);
   });
-  ws.onchange = function () { SETTINGS.weekStart = +ws.value; saveSettings(); fetchData(); };
+  ws.onchange = function () { SETTINGS.weekStart = +ws.value; saveSettings(); pushShared({ prefs: sharedPrefs() }); fetchData(); };
   c3.appendChild(ws);
   grid.appendChild(c3);
 
@@ -1874,7 +1896,7 @@ function renderSettings(root) {
     if (+SETTINGS.rolloverHour === h) o2.selected = true;
     ro.appendChild(o2);
   }
-  ro.onchange = function () { SETTINGS.rolloverHour = +ro.value; saveSettings(); fetchData(); };
+  ro.onchange = function () { SETTINGS.rolloverHour = +ro.value; saveSettings(); pushShared({ prefs: sharedPrefs() }); fetchData(); };
   c4.appendChild(ro);
   c4.appendChild(el('div', 'set-note', 'If you trade past midnight, sales before this hour count to the previous day.'));
   grid.appendChild(c4);
@@ -1887,7 +1909,7 @@ function renderSettings(root) {
     if (SETTINGS.timezone === z) o.selected = true;
     tzSel.appendChild(o);
   });
-  tzSel.onchange = function () { SETTINGS.timezone = tzSel.value; saveSettings(); fetchData(); };
+  tzSel.onchange = function () { SETTINGS.timezone = tzSel.value; saveSettings(); pushShared({ prefs: sharedPrefs() }); fetchData(); };
   c5.appendChild(tzSel);
   grid.appendChild(c5);
 
@@ -1908,7 +1930,7 @@ function renderSettings(root) {
 
   /* Targets and alerts (Monday-review thresholds) */
   root.appendChild(el('div', 'screen-title', 'Targets and alerts'));
-  root.appendChild(el('p', 'screen-sub', 'Set the level you want each number to stay on the right side of. Cost and profit targets are a share of revenue (30 means 30% of revenue). Revenue targets are an average PER WEEK: the dashboard scales them to the period you\u2019re viewing (a month is about 4.3 weeks, a year 52 weeks). A card flags amber when it slips to the wrong side. Revenue is shown against its own recent average instead of a fixed target.'));
+  root.appendChild(el('p', 'screen-sub', 'Set the level you want each number to stay on the right side of. Cost and profit targets are a share of revenue (30 means 30% of revenue). Revenue targets are an average PER WEEK: the dashboard scales them to the period you\u2019re viewing (a week = 1, a 30-day month \u2248 4.3, a full year = 52 weeks). A card flags amber when it slips to the wrong side. Revenue is shown against its own recent average instead of a fixed target.'));
   var tgrid = el('div', 'set-grid');
   CHOSEN.forEach(function (k) {
     var mdef = METRIC_DEFS[k];

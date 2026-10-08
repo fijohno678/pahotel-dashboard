@@ -411,6 +411,15 @@ function applyDeptWages(figures, d) {
      bookkeeper started tagging), a department figure would be a misleading $0:
      leave the department tiles empty and say why. */
   const allAmt = Object.keys(acc).reduce((t, k) => t + acc[k], 0);
+  /* A NEGATIVE department total means the period contains the auto-reversal of
+     an earlier wage accrual (e.g. 1st of the month) without the matching
+     payroll posted by department yet: the split isn't meaningful, so don't show it. */
+  const negDept = depts.filter((k) => deptTargets(k) && ((d.wages[k] || 0) + share(k)) < 0);
+  if (negDept.length) {
+    figures.deptNote = 'Not available for these dates yet: Xero shows negative wages for ' + negDept.join(', ') + ' (last month\u2019s wage accrual has been reversed but this period\u2019s wages aren\u2019t posted by department yet).';
+    figures.unassignedWages = acc.unassigned / 100;
+    return;
+  }
   if (allAmt <= 0 || acc.unassigned > allAmt * 0.5) {
     figures.deptNote = 'Xero has no department split for most wages in these dates (department tagging started later), so this can\u2019t be shown for this period.';
     figures.unassignedWages = acc.unassigned / 100;
@@ -1157,8 +1166,8 @@ async function apiMetrics(env, url, board) {
   };
   let shared = {};
   try { shared = JSON.parse((await env.TOKENS.get('sys:shared')) || '{}'); } catch (e) {}
-  if (board) { const fp = filterForBoard(payload, board); fp.shared = { targets: shared.targets || {} }; return json(fp); }
-  payload.shared = { targets: shared.targets || null, recon: shared.recon || null };
+  if (board) { const fp = filterForBoard(payload, board); fp.shared = { targets: shared.targets || {}, prefs: shared.prefs || null }; return json(fp); }
+  payload.shared = { targets: shared.targets || null, recon: shared.recon || null, prefs: shared.prefs || null };
   try {
     const st = await stocktakeStatus(env, makeHelpers(env, 'accounting'));
     payload.stocktake = { previous: st.previous, previousDone: !!st.done[st.previous], current: st.current };
@@ -1173,6 +1182,7 @@ async function apiShared(env, request) {
   try { shared = JSON.parse((await env.TOKENS.get('sys:shared')) || '{}'); } catch (e) {}
   if (body && body.targets && typeof body.targets === 'object') shared.targets = body.targets;
   if (body && body.recon && typeof body.recon === 'object') shared.recon = body.recon;
+  if (body && body.prefs && typeof body.prefs === 'object') shared.prefs = { defaultPeriod: String(body.prefs.defaultPeriod || 'thisMonth'), weekStart: +body.prefs.weekStart || 0, rolloverHour: +body.prefs.rolloverHour || 0, timezone: String(body.prefs.timezone || 'Australia/Brisbane') };
   if (body && body.stocktake && typeof body.stocktake === 'object') { shared.stocktake = shared.stocktake || {}; Object.keys(body.stocktake).forEach((m) => { if (/^\d{4}-\d{2}$/.test(m)) shared.stocktake[m] = !!body.stocktake[m]; }); }
   shared.updated = new Date().toISOString();
   await env.TOKENS.put('sys:shared', JSON.stringify(shared));
