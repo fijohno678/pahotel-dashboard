@@ -86,7 +86,9 @@ const ADAPTERS = {
     oauth: {
       authorizeUrl: 'https://login.xero.com/identity/connect/authorize',
       tokenUrl: 'https://identity.xero.com/connect/token',
-      scopes: 'offline_access accounting.reports.profitandloss.read',
+      /* + accounting.settings.read (read-only) to look up the 'Department'
+         tracking category, so wages can be split by department (8 Oct 2026). */
+      scopes: 'offline_access accounting.reports.profitandloss.read accounting.settings.read',
       clientIdSecret: 'ACCOUNTING_CLIENT_ID',
       clientSecretSecret: 'ACCOUNTING_CLIENT_SECRET',
       tokenAuth: 'basic'
@@ -103,8 +105,9 @@ const ADAPTERS = {
     },
     async fetchRange(env, h, q) {
       const rep = await xeroPnl(env, h, { fromDate: q.from, toDate: q.to }, 120);
-      const cols = xeroColumns(rep, 1);
-      return cols[0].figures;
+      const f = xeroColumns(rep, 1)[0].figures;
+      applyDeptWages(f, await xeroDeptPnl(env, h, { fromDate: q.from, toDate: q.to }, 120));
+      return f;
     },
     async fetchMonthly(env, h, q) {
       /* Xero returns up to 12 monthly columns per call (newest first); chunk. */
@@ -124,6 +127,17 @@ const ADAPTERS = {
         const rep = await xeroPnl(env, h, params, 3600);
         const cols = xeroColumns(rep, n);
         for (let i = 0; i < n; i++) byMonth[months[end - 1 - i]] = cols[i] ? cols[i].figures : null;
+      }
+      /* Department split per month (last 13 months; one report per month,
+         cached a day for closed months, an hour for the current one). */
+      const nowMo = new Date().toISOString().slice(0, 7);
+      for (const mo of months.slice(-13)) {
+        if (!byMonth[mo]) continue;
+        const [y, m] = mo.split('-').map(Number);
+        const ld = new Date(Date.UTC(y, m, 0)).getUTCDate();
+        const d = await xeroDeptPnl(env, h, { fromDate: mo + '-01', toDate: mo + '-' + String(ld).padStart(2, '0') }, mo < nowMo ? 86400 : 3600);
+        if (d.unavailable) break;
+        applyDeptWages(byMonth[mo], d);
       }
       months.forEach((mo) => {
         const f = byMonth[mo];
@@ -264,27 +278,27 @@ const CENTRES = {
   fb: {
     sales: ['Sales - Chard Bar', 'Sales - Chard Restaurant', 'Sales - Coffee Shop', 'Sales - Gaming Bar', 'Sales - Plantation Bar', 'Sales - Tapd', 'Sales - Tapd (Food)'],
     cogs: ['COGS - Chard Restaurant (Food)', 'COGS - Coffee Shop', 'COGS - Coffee Shop Cakes', 'COGS - Tapd', 'COGS - Tapd (Food)', 'Wastage'],
-    wages: 'ALL_STAFF'
+    wages: 'DEPT' /* Beverage + Restaurant departments */
   },
   kitchen: {
     sales: ['Sales - Chard Restaurant', 'Sales - Coffee Shop', 'Sales - Tapd (Food)'],
     cogs: ['COGS - Chard Restaurant (Food)', 'COGS - Coffee Shop', 'COGS - Coffee Shop Cakes', 'COGS - Tapd', 'COGS - Tapd (Food)', 'Wastage'],
-    wages: [] /* waiting on Xero: kitchen wages + super accounts */
+    wages: 'DEPT' /* Kitchen department */
   },
   retail: {
     sales: ['Sales - Ripley DBS'],
     cogs: ['COGS - Ripley St'],
-    wages: [] /* waiting on Xero: Ripley DBS wages + super accounts */
+    wages: 'DEPT' /* Ripley DBS department */
   },
   bar: {
     sales: ['Sales - Chard Bar', 'Sales - Gaming Bar', 'Sales - Plantation Bar', 'Sales - Tapd'],
     cogs: ['COGS - Tapd'],
-    wages: null /* Adam's Cost of Sales (Bar) tile: COGS - Tapd / bar sales */
+    wages: 'DEPT' /* Beverage department */
   },
   gaming: {
     sales: ['Gaming Machines Income', 'Keno Income'],
     cogs: ['Gaming - State Tax', 'Gaming Monitoring Fees'],
-    wages: null /* no wage tile for gaming */
+    wages: 'DEPT' /* Gaming Machines department */
   }
 };
 /* Known spelling slips in the owner's Xero account names, treated as the same account. */
@@ -300,6 +314,98 @@ function centreKeys() {
   const keys = [];
   Object.keys(CENTRES).forEach((k) => { keys.push(k + '_sales', k + '_cogs'); if (CENTRES[k].wages !== null) keys.push(k + '_wages'); });
   return keys;
+}
+
+/* ---------------- Wages by department (owner's rules, 8 Oct 2026) ----------
+   Xero payroll journals tag each wage line with the "Department" tracking
+   category. The P&L report run per tracking category gives one column per
+   department, so no journal-by-journal drilling is needed.
+     Beverage        -> F&B and Bar
+     Restaurant      -> F&B
+     Kitchen         -> Kitchen
+     Gaming Machines -> Gaming
+     Ripley DBS      -> Retail
+     General         -> Overheads (taken out of staff wages)
+   Super is all tagged General in Xero, so staff super is SHARED across
+   departments in proportion to each department's wages (owner's choice).
+   Owners' pay (Johnson lines) is never staff wages - it stays in Overheads. */
+const DEPT_RULES = [
+  { re: /beverage/i,  to: ['fb', 'bar'] },
+  { re: /restaurant/i, to: ['fb'] },
+  { re: /kitchen/i,   to: ['kitchen'] },
+  { re: /gaming/i,    to: ['gaming'] },
+  { re: /ripley/i,    to: ['retail'] },
+  { re: /general/i,   to: ['overheads'] }
+];
+function deptTargets(name) {
+  const r = DEPT_RULES.filter((x) => x.re.test(name || ''))[0];
+  return r ? r.to : null;
+}
+async function xeroDeptCategory(env, h) {
+  const tenant = await xeroTenant(env, h);
+  const key = 'xero:deptcat:' + tenant.id;
+  const hit = await env.TOKENS.get(key);
+  if (hit) { try { return JSON.parse(hit); } catch (e) {} }
+  let pick = null, reason = null;
+  try {
+    const data = await h.fetchJson('https://api.xero.com/api.xro/2.0/TrackingCategories', { headers: { 'xero-tenant-id': tenant.id, Accept: 'application/json' } });
+    const cats = (data && data.TrackingCategories) || [];
+    pick = cats.filter((c) => /department/i.test(c.Name))[0]
+      || cats.filter((c) => (c.Options || []).some((o) => /kitchen|beverage/i.test(o.Name)))[0] || null;
+    if (!pick) reason = 'No "Department" tracking category found in Xero.';
+  } catch (e) {
+    reason = (e.status === 401 || e.status === 403)
+      ? 'Xero needs one more read-only permission to see departments. Click Reconnect on the Connections screen.'
+      : 'Couldn’t read departments from Xero just now.';
+  }
+  const out = pick ? { id: pick.TrackingCategoryID, name: pick.Name, options: (pick.Options || []).map((o) => o.Name) } : { id: null, reason: reason };
+  try { await env.TOKENS.put(key, JSON.stringify(out), { expirationTtl: pick ? 21600 : 300 }); } catch (e) {}
+  return out;
+}
+/* Department P&L -> { wages: {dept: cents}, super: {dept: cents}, lines } */
+async function xeroDeptPnl(env, h, params, ttl) {
+  const cat = await xeroDeptCategory(env, h);
+  if (!cat || !cat.id) return { unavailable: (cat && cat.reason) || 'Departments unavailable.' };
+  const rep = await xeroPnl(env, h, { ...params, trackingCategoryID: cat.id }, ttl);
+  const header = (rep.Rows || []).filter((r) => r.RowType === 'Header')[0];
+  const names = header ? (header.Cells || []).map((c) => String(c.Value || '')) : [];
+  const out = { category: cat.name, wages: {}, super: {} };
+  (rep.Rows || []).forEach((sec) => {
+    if (sec.RowType !== 'Section' || classifySection(sec.Title) !== 'opex') return;
+    (sec.Rows || []).forEach((r) => {
+      if (r.RowType !== 'Row') return;
+      const label = r.Cells && r.Cells[0] ? r.Cells[0].Value : '';
+      if (!isWageLine(label)) return;
+      const bucket = /super/i.test(label) ? out.super : out.wages;
+      for (let i = 1; i < names.length; i++) {
+        if (/^total/i.test(names[i].trim())) continue;
+        const v = toCents(r.Cells && r.Cells[i] ? r.Cells[i].Value : 0);
+        bucket[names[i]] = (bucket[names[i]] || 0) + v;
+      }
+    });
+  });
+  return out;
+}
+/* Allocate department wages (+ shared super) onto the figures for one period. */
+function applyDeptWages(figures, d) {
+  if (!figures) return;
+  if (!d || d.unavailable) { figures.deptNote = d ? d.unavailable : null; return; }
+  const depts = Object.keys(d.wages).concat(Object.keys(d.super).filter((k) => !(k in d.wages)));
+  const totalWages = depts.reduce((s, k) => s + (d.wages[k] || 0), 0);
+  const totalSuper = depts.reduce((s, k) => s + (d.super[k] || 0), 0);
+  const share = (k) => (totalWages ? Math.round((d.wages[k] || 0) / totalWages * totalSuper) : 0);
+  const acc = { fb: 0, bar: 0, kitchen: 0, gaming: 0, retail: 0, overheads: 0, unassigned: 0 };
+  depts.forEach((k) => {
+    const amt = (d.wages[k] || 0) + share(k);
+    const to = deptTargets(k);
+    if (!to) acc.unassigned += amt; else to.forEach((t) => { acc[t] += amt; });
+  });
+  ['fb', 'bar', 'kitchen', 'gaming', 'retail'].forEach((k) => { figures[k + '_wages'] = acc[k] / 100; });
+  /* General department wages + its share of super move from staff wages to Overheads. */
+  figures.wagesSuper = Math.round(figures.wagesSuper * 100 - acc.overheads) / 100;
+  figures.overheads = Math.round(figures.overheads * 100 + acc.overheads) / 100;
+  figures.generalWages = acc.overheads / 100;
+  figures.unassignedWages = acc.unassigned / 100;
 }
 
 function xeroColumns(rep, n) {
@@ -354,6 +460,7 @@ function xeroColumns(rep, n) {
       figures[k + '_cogs'] = sum(ce.cogs) / 100;
       if (ce.wages === 'ALL_STAFF') figures[k + '_wages'] = c.wages / 100;
       else if (Array.isArray(ce.wages)) figures[k + '_wages'] = ce.wages.length ? sum(ce.wages) / 100 : null;
+      else if (ce.wages === 'DEPT') figures[k + '_wages'] = null; /* filled by applyDeptWages */
     });
     return { lines: col.lines, byName: col.byName, figures: figures };
   });
@@ -392,14 +499,27 @@ async function accountsPage(env, url) {
       ce.sales.forEach((nm) => { allSales[normName(nm)] = true; });
       const row = (nm) => { const v = col.byName[normName(nm)]; return '<tr><td>' + escHtml(nm) + '</td><td>' + (v === undefined ? '<em>not found</em>' : money(v)) + '</td></tr>'; };
       body += '<h2>' + CENTRE_NAMES[k] + '</h2><table><tr><td colspan="2"><b>Sales</b></td></tr>' + ce.sales.map(row).join('') + '<tr><td colspan="2"><b>Cost of goods</b></td></tr>' + ce.cogs.map(row).join('');
-      if (ce.wages === 'ALL_STAFF') body += '<tr><td colspan="2"><b>Wages and super</b>: all staff wages and super (until the department split is in Xero)</td></tr>';
+      if (ce.wages === 'DEPT') body += '<tr><td colspan="2"><b>Wages and super</b>: from Xero departments (see below)</td></tr>';
+      else if (ce.wages === 'ALL_STAFF') body += '<tr><td colspan="2"><b>Wages and super</b>: all staff wages and super</td></tr>';
       else if (Array.isArray(ce.wages) && !ce.wages.length) body += '<tr><td colspan="2"><b>Wages and super</b>: <em>waiting for these accounts to be split out in Xero</em></td></tr>';
       else if (Array.isArray(ce.wages)) body += '<tr><td colspan="2"><b>Wages and super</b></td></tr>' + ce.wages.map(row).join('');
       body += '</table>';
     });
     const unassigned = col.lines.filter((l) => l.as === 'revenue' && !allSales[l.key]);
     if (unassigned.length) body += '<h2>Income lines not in any cost centre</h2><p>These count in overall Revenue only.</p><table>' + unassigned.map((l) => '<tr><td>' + escHtml(l.label) + '</td><td>' + money(l.cents) + '</td></tr>').join('') + '</table>';
+    const dp = await xeroDeptPnl(env, h, { fromDate: from, toDate: to }, 120);
+    body += '<h1 style="margin-top:2.4rem">Wages by department</h1>';
+    if (dp.unavailable) {
+      body += '<p>' + escHtml(dp.unavailable) + '</p>';
+    } else {
+      const ds = Object.keys(dp.wages).concat(Object.keys(dp.super).filter((k) => !(k in dp.wages)));
+      const tw = ds.reduce((s, k) => s + (dp.wages[k] || 0), 0), ts = ds.reduce((s, k) => s + (dp.super[k] || 0), 0);
+      const where = (k) => { const t = deptTargets(k); return t ? t.map((x) => ({ fb: 'F&B', bar: 'Bar', kitchen: 'Kitchen', gaming: 'Gaming', retail: 'Retail', overheads: 'Overheads' })[x]).join(' + ') : '<em>not mapped: counts in staff wages only</em>'; };
+      body += '<p>From the Xero tracking category "' + escHtml(dp.category) + '". Staff super (' + money(ts) + ', tagged General in Xero) is shared across departments in proportion to wages. Owners\u2019 pay is not included.</p><table><tr><td><b>Department</b></td><td><b>Wages</b></td><td><b>+ super share</b></td><td><b>Goes to</b></td></tr>'
+        + ds.map((k) => '<tr><td>' + escHtml(k) + '</td><td>' + money(dp.wages[k] || 0) + '</td><td>' + money(tw ? Math.round((dp.wages[k] || 0) / tw * ts) : 0) + '</td><td>' + where(k) + '</td></tr>').join('') + '</table>';
+    }
     const f = col.figures;
+    applyDeptWages(f, dp);
     body += '<h2>Totals</h2><table><tr><td>Revenue</td><td>' + money(Math.round(f.revenue * 100)) + '</td></tr><tr><td>Cost of goods</td><td>' + money(Math.round(f.cogs * 100)) + '</td></tr><tr><td>Wages and super</td><td>' + money(Math.round(f.wagesSuper * 100)) + '</td></tr><tr><td>Overheads</td><td>' + money(Math.round(f.overheads * 100)) + '</td></tr></table>';
   } catch (e) {
     body = '<h1>Not connected yet</h1><p>Connect Xero on the Connections screen first.</p>';
@@ -972,7 +1092,7 @@ async function apiMetrics(env, url, board) {
    password (set by the owner while logged in). Their data feed is cut down
    SERVER-SIDE to only their fields, so nothing else ever reaches their browser. */
 const BOARDS = {
-  adam:    { name: 'Adam',    role: 'Bar',     metrics: ['fbSales', 'fbCogs', 'fbWage', 'barCogs'], fields: ['fb_sales', 'fb_cogs', 'fb_wages', 'bar_sales', 'bar_cogs'] },
+  adam:    { name: 'Adam',    role: 'Bar',     metrics: ['fbSales', 'fbCogs', 'fbWage', 'barCogs', 'barWage'], fields: ['fb_sales', 'fb_cogs', 'fb_wages', 'bar_sales', 'bar_cogs', 'bar_wages'] },
   amy:     { name: 'Amy',     role: 'F&B',     metrics: ['fbSales', 'fbCogs', 'fbWage'],            fields: ['fb_sales', 'fb_cogs', 'fb_wages'] },
   stephen: { name: 'Stephen', role: 'Kitchen', metrics: ['kSales', 'kCogs', 'kWage'],               fields: ['kitchen_sales', 'kitchen_cogs', 'kitchen_wages'] }
 };
