@@ -682,7 +682,7 @@ function periodValues(slot) {  /* slot: 'cur' | 'prev' | 'yoy' */
   }
   if (pos) out.count = num(pos.count);
   if (ros) out.rosteredCost = num(ros.cost);
-  if (acc) { for (var ak in acc) { if (!(ak in out)) out[ak] = num(acc[ak]); } }
+  if (acc) { for (var ak in acc) { if (!(ak in out)) out[ak] = num(acc[ak]); } if (typeof acc.deptNote === 'string') out.deptNote = acc.deptNote; }
   return out;
 }
 function num(v) { return (typeof v === 'number' && isFinite(v)) ? v : null; }
@@ -1092,7 +1092,7 @@ function metricCard(key, cur, prev, yoy, r) {
   } else {
     card.appendChild(headline(key, cur, v));
     if (key === 'acs' && v === 'dash') card.appendChild(el('div', 'm-sub', 'No transactions in this period'));
-    if (def.pending && shareDollars(key, cur) == null) card.appendChild(el('div', 'm-sub', esc(def.pending)));
+    if (def.pending && shareDollars(key, cur) == null) card.appendChild(el('div', 'm-sub', esc(cur.deptNote || def.pending)));
     if (key === 'wage' && P.rostering && cur.rosteredCost != null && cur.revenue != null && cur.revenue !== 0) {
       var pj = ((cur.rosteredCost / cur.revenue) * 100).toFixed(1);
       var ps = el('div', 'm-sub');

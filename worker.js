@@ -405,6 +405,15 @@ function applyDeptWages(figures, d) {
     const to = deptTargets(k);
     if (!to) acc.unassigned += amt; else to.forEach((t) => { acc[t] += amt; });
   });
+  /* If most wages in this period carry NO department in Xero (e.g. before the
+     bookkeeper started tagging), a department figure would be a misleading $0:
+     leave the department tiles empty and say why. */
+  const allAmt = Object.keys(acc).reduce((t, k) => t + acc[k], 0);
+  if (allAmt <= 0 || acc.unassigned > allAmt * 0.5) {
+    figures.deptNote = 'Xero has no department split for most wages in these dates (department tagging started later), so this can\u2019t be shown for this period.';
+    figures.unassignedWages = acc.unassigned / 100;
+    return;
+  }
   ['fb', 'bar', 'kitchen', 'gaming', 'retail'].forEach((k) => { figures[k + '_wages'] = acc[k] / 100; });
   /* General department wages + its share of super move from staff wages to Overheads. */
   figures.wagesSuper = Math.round(figures.wagesSuper * 100 - acc.overheads) / 100;
