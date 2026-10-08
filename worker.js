@@ -282,7 +282,8 @@ const CENTRES = {
   },
   kitchen: {
     sales: ['Sales - Chard Restaurant', 'Sales - Coffee Shop', 'Sales - Tapd (Food)'],
-    cogs: ['COGS - Chard Restaurant (Food)', 'COGS - Coffee Shop', 'COGS - Coffee Shop Cakes', 'COGS - Tapd', 'COGS - Tapd (Food)', 'Wastage'],
+    /* Owner, 8 Oct 2026: kitchen COGS excludes COGS - Tapd (bar stock). */
+    cogs: ['COGS - Chard Restaurant (Food)', 'COGS - Coffee Shop', 'COGS - Coffee Shop Cakes', 'COGS - Tapd (Food)', 'Wastage'],
     wages: 'DEPT' /* Kitchen department */
   },
   retail: {
