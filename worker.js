@@ -282,8 +282,12 @@ const CENTRES = {
     wages: null /* no wage tile for gaming */
   }
 };
+/* Known spelling slips in the owner's Xero account names, treated as the same account. */
+const NAME_FIXES = [[/restuarant/g, 'restaurant']];
 function normName(s) {
-  return String(s || '').toLowerCase().replace(/[–—−]/g, '-').replace(/\s*-\s*/g, ' - ').replace(/\s+/g, ' ').trim();
+  let t = String(s || '').toLowerCase();
+  NAME_FIXES.forEach((f) => { t = t.replace(f[0], f[1]); });
+  return t.replace(/[–—−]/g, '-').replace(/\s*-\s*/g, ' - ').replace(/\s+/g, ' ').trim();
 }
 const ALL_CENTRE_COGS = {};
 Object.keys(CENTRES).forEach((k) => CENTRES[k].cogs.forEach((n) => { ALL_CENTRE_COGS[normName(n)] = true; }));
