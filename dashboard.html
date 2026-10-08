@@ -246,6 +246,9 @@ body {
 .tbar:hover { opacity: 0.78; }
 .mcard.alert { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
 /* Cost-centre sections: coloured heading + a strip and faint tint on each tile */
+.mcard.kpi-miss { border-color: #C0392B; box-shadow: 0 0 0 2px #C0392B; }
+.tag-miss { background: #C0392B; color: #fff; border: 1px solid #C0392B; margin-right: 6px; }
+.mcard.kpi-miss .m-pri { color: #C0392B; }
 .sec-head { --sec: #0D0D0D; display: flex; align-items: center; gap: 9px; margin: 1.5rem 0 0.7rem; }
 .sec-head:first-of-type { margin-top: 0.4rem; }
 .sec-dot { width: 12px; height: 12px; border-radius: 3px; background: var(--sec); }
@@ -328,6 +331,7 @@ function loadSettings() {
     var s = JSON.parse(raw);
     var d = defaultSettings();
     for (var k in d) { if (!(k in s)) s[k] = d[k]; }
+    if (s.targets && d.targets) { for (var tk in d.targets) { if (!(tk in s.targets)) s.targets[tk] = d.targets[tk]; } }
     return s;
   } catch (e) { return defaultSettings(); }
 }
@@ -1020,6 +1024,16 @@ function metricCard(key, cur, prev, yoy, r) {
     card.appendChild(el('span', 'm-tag tag-check', 'Needs checking'));
   } else if (RECON[key] !== 'confirmed') {
     card.appendChild(el('span', 'm-tag tag-unverified', 'Unverified'));
+  }
+
+  /* KPI miss: red badge + red outline when the tile is on the wrong side of
+     the owner's target (set in Settings). */
+  if (!(state.loading && state.data == null)) {
+    var pfk = primaryFigure(key, cur);
+    if (targetBreached(key, pfk)) {
+      card.className += ' kpi-miss';
+      card.appendChild(el('span', 'm-tag tag-miss', (def.goodDir === 'down' ? '\u25B2 Over KPI ' : '\u25BC Below KPI ') + esc(fmtTarget(key, metricTarget(key)))));
+    }
   }
 
   card.appendChild(el('div', 'm-label', esc(def.label)));
