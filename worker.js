@@ -404,7 +404,7 @@ async function accountsPage(env, url) {
   } catch (e) {
     body = '<h1>Not connected yet</h1><p>Connect Xero on the Connections screen first.</p>';
   }
-  return htmlResponse('<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>How your numbers are counted</title><style>body{font-family:system-ui,sans-serif;background:#FAF7F2;color:#2A2420;max-width:720px;margin:2rem auto;padding:0 1rem}h1{font-size:26px}h2{font-size:17px;margin-top:1.6rem}p{color:#8C8075}table{width:100%;border-collapse:collapse;background:#fffdf9}td{padding:6px 10px;border-bottom:1px solid #eee}td:last-child{text-align:right;white-space:nowrap}</style></head><body>' + body + '<p><a href="/">Back to your dashboard</a></p></body></html>');
+  return htmlResponse('<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><meta name="apple-mobile-web-app-title" content="PA Hotel"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#FAF7F2"><title>How your numbers are counted</title><style>body{font-family:system-ui,sans-serif;background:#FAF7F2;color:#2A2420;max-width:720px;margin:2rem auto;padding:0 1rem}h1{font-size:26px}h2{font-size:17px;margin-top:1.6rem}p{color:#8C8075}table{width:100%;border-collapse:collapse;background:#fffdf9}td{padding:6px 10px;border-bottom:1px solid #eee}td:last-child{text-align:right;white-space:nowrap}</style></head><body>' + body + '<p><a href="/">Back to your dashboard</a></p></body></html>');
 }
 function escHtml(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -646,7 +646,7 @@ function apiLogout() {
   return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Set-Cookie': 'vd_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0' } });
 }
 function loginPage() {
-  return '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign in</title>'
+  return '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><meta name="apple-mobile-web-app-title" content="PA Hotel"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#FAF7F2"><title>Sign in</title>'
     + '<link href="https://fonts.googleapis.com/css2?family=Khand:wght@600;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">'
     + '<style>'
     + 'body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#FAF7F2;font-family:"DM Sans",sans-serif;color:#2A2420}'
@@ -671,7 +671,7 @@ function loginPage() {
 }
 
 function setupPage() {
-  return '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Set your password</title>'
+  return '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><meta name="apple-mobile-web-app-title" content="PA Hotel"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="theme-color" content="#FAF7F2"><title>Set your password</title>'
     + '<link href="https://fonts.googleapis.com/css2?family=Khand:wght@600;700&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">'
     + '<style>'
     + 'body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#FAF7F2;font-family:"DM Sans",sans-serif;color:#2A2420}'
@@ -977,6 +977,8 @@ const BOARDS = {
   stephen: { name: 'Stephen', role: 'Kitchen', metrics: ['kSales', 'kCogs', 'kWage'],               fields: ['kitchen_sales', 'kitchen_cogs', 'kitchen_wages'] }
 };
 const BOARD_VENUE = 'PA Hotel';
+/* 180x180 PNG home-screen icon: 'PA' on black with a gold bar. */
+const APP_ICON_B64 = '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';
 function pickFields(obj, fields) {
   if (!obj) return null;
   const out = {};
@@ -1110,6 +1112,11 @@ export default {
     const path = url.pathname;
 
     if (path === '/favicon.ico') return new Response(null, { status: 204 });
+    if (path === '/apple-touch-icon.png' || path === '/apple-touch-icon-precomposed.png') {
+      /* Home-screen icon for phones (owner request, 8 Oct 2026). Public, no data. */
+      const bin = Uint8Array.from(atob(APP_ICON_B64), (c) => c.charCodeAt(0));
+      return new Response(bin, { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' } });
+    }
     if (path === '/api/login' && request.method === 'POST') return apiLogin(env, request);
     if (path === '/api/setup' && request.method === 'POST') return apiSetup(env, request);
     if (path === '/api/logout' && request.method === 'POST') return apiLogout();
