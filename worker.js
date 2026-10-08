@@ -1089,8 +1089,10 @@ async function apiMetrics(env, url, board) {
   const cur = parseRange(url.searchParams.get('cur'));
   if (!cur) return json({ error: 'bad cur range' }, 400);
   const prev = parseRange(url.searchParams.get('prev'));
-  const bmtd = parseRange(url.searchParams.get('bmtd'));
-  const blast = parseRange(url.searchParams.get('blast'));
+  /* Bonus tracker ranges (quarter to date; COGS only through stocktaken months). */
+  const BONUS_KEYS = ['bq', 'bqc', 'bqc2'];
+  const bonusRanges = {};
+  BONUS_KEYS.forEach((k) => { const r = parseRange(url.searchParams.get(k)); if (r) bonusRanges[k] = r; });
   const yoy = parseRange(url.searchParams.get('yoy'));
   const trend = parseMonthRange(url.searchParams.get('trend'));
   const tz = url.searchParams.get('tz') || 'Australia/Sydney';
@@ -1111,7 +1113,7 @@ async function apiMetrics(env, url, board) {
   const cacheKey = 'metricscache:' + [
     url.searchParams.get('cur') || '', url.searchParams.get('prev') || '',
     url.searchParams.get('yoy') || '', url.searchParams.get('trend') || '',
-    url.searchParams.get('bmtd') || '', url.searchParams.get('blast') || '',
+    url.searchParams.get('bq') || '', url.searchParams.get('bqc') || '', url.searchParams.get('bqc2') || '',
     tz, rollover
   ].join('|');
   const force = url.searchParams.get('refresh') === '1';
@@ -1125,8 +1127,7 @@ async function apiMetrics(env, url, board) {
     periods.cur = await fetchSlot(env, { ...base, ...cur });
     periods.prev = prev ? await fetchSlot(env, { ...base, ...prev }) : null;
     periods.yoy = yoy ? await fetchSlot(env, { ...base, ...yoy }) : null;
-    if (bmtd) periods.bmtd = await fetchSlot(env, { ...base, ...bmtd });
-    if (blast) periods.blast = await fetchSlot(env, { ...base, ...blast });
+    for (const k of Object.keys(bonusRanges)) periods[k] = await fetchSlot(env, { ...base, ...bonusRanges[k] });
 
     let trendOut = null;
     if (trend) {
@@ -1211,7 +1212,7 @@ function filterForBoard(p, board) {
       accounting: { configured: !!acc.configured, connected: !!acc.connected, lastSync: acc.lastSync || null, error: acc.error || null },
       pos: { configured: false }, rostering: { configured: false }
     },
-    periods: { cur: slot(p.periods.cur), prev: slot(p.periods.prev), yoy: slot(p.periods.yoy), bmtd: slot(p.periods.bmtd), blast: slot(p.periods.blast) },
+    periods: { cur: slot(p.periods.cur), prev: slot(p.periods.prev), yoy: slot(p.periods.yoy), bq: slot(p.periods.bq), bqc: slot(p.periods.bqc), bqc2: slot(p.periods.bqc2) },
     trend: p.trend ? { months: p.trend.months, accounting: pickFields(p.trend.accounting, board.fields), pos: null } : null
   };
 }

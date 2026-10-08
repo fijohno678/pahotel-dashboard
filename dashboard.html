@@ -265,6 +265,10 @@ body {
 .bonus-pill.p50 { background: #FDF3DC; color: #9E6800; border: 1px solid rgba(158,104,0,.3); }
 .bonus-pill.p0 { background: #C0392B; color: #fff; }
 .bonus-pill.pend { background: var(--cream2); color: var(--muted); font-weight: 500; white-space: normal; text-align: right; }
+.bonus-s { font-size: 10.5px; color: var(--muted); }
+.bonus-total { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+.share-url { font-family: monospace; font-size: 13px; background: #fff; padding: 2px 6px; border-radius: 6px; word-break: break-all; }
+.share-pw { margin-left: 12px; font-size: 12.5px; color: inherit; }
 .bonus-foot { font-size: 10.5px; color: var(--muted); margin-top: 0.45rem; line-height: 1.45; }
 @media (max-width: 640px) { .bonus-box { margin-left: 0; max-width: none; width: 100%; } }
 .sec-head { --sec: #0D0D0D; display: flex; align-items: center; gap: 9px; margin: 1.5rem 0 0.7rem; }
@@ -620,9 +624,13 @@ function apiUrl(force) {
         + '&tz=' + encodeURIComponent(SETTINGS.timezone)
         + '&rollover=' + (+SETTINGS.rolloverHour || 0);
   if (BOARD && BOARD.bonus) {
-    var bt = tradingToday(), bm = stamp(bt.getUTCFullYear(), bt.getUTCMonth() + 1, 1);
-    var lm = addMonths(bm, -1);
-    q += '&bmtd=' + iso(bm) + ':' + iso(bt) + '&blast=' + iso(lm) + ':' + iso(addDays(bm, -1));
+    /* Current quarter (Jul-Sep, Oct-Dec, Jan-Mar, Apr-Jun) to date. Wages: quarter
+       to today. Bar COGS: quarter to the end of last month (bqc), or to the end of
+       the month before if last month's stocktake isn't in yet (bqc2). */
+    var bq = bonusQuarter();
+    q += '&bq=' + iso(bq.start) + ':' + iso(bq.today);
+    if (bq.endLast.getTime() >= bq.start.getTime()) q += '&bqc=' + iso(bq.start) + ':' + iso(bq.endLast);
+    if (bq.endPrev.getTime() >= bq.start.getTime()) q += '&bqc2=' + iso(bq.start) + ':' + iso(bq.endPrev);
   }
   return (BOARD ? '/api/board/' + BOARD.id + '/metrics?' : '/api/metrics?') + q + (force ? '&refresh=1' : '');
 }
@@ -928,15 +936,26 @@ function render() {
     b.onclick = function () { state.view = t.key; render(); };
     nav.appendChild(b);
   });
-  if (BOARD) {
-    var lo = el('button', 'nav-tab', BOARD.owner ? 'Back to main dashboard' : 'Log out');
-    lo.onclick = function () {
-      if (BOARD.owner) { window.location.href = '/'; return; }
-      fetch('/api/board/' + BOARD.id + '/logout', { method: 'POST' }).then(function () { location.reload(); });
-    };
+  if (BOARD && !BOARD.owner) {
+    var lo = el('button', 'nav-tab', 'Log out');
+    lo.onclick = function () { fetch('/api/board/' + BOARD.id + '/logout', { method: 'POST' }).then(function () { location.reload(); }); };
     nav.appendChild(lo);
   }
   root.appendChild(nav);
+  if (BOARD && BOARD.owner) {
+    /* Only you (signed in as owner) see this: the link to send to this staff member. */
+    var link = location.origin + '/board/' + BOARD.id;
+    var sh = el('div', 'banner banner-amber share-box');
+    sh.innerHTML = '<b>Only you can see this.</b> ' + esc(BOARD.name) + '\u2019s link to share: <span class="share-url">' + esc(link) + '</span> ';
+    var cb = el('button', 'btn-small', 'Copy link');
+    cb.onclick = function () {
+      try { navigator.clipboard.writeText(link).then(function () { cb.textContent = 'Copied'; }); } catch (e) { cb.textContent = 'Select and copy the link'; }
+    };
+    sh.appendChild(cb);
+    var pw = document.createElement('a'); pw.href = '/board/' + BOARD.id + '?setup=1'; pw.textContent = 'Set or change ' + BOARD.name + '\u2019s password'; pw.className = 'share-pw';
+    sh.appendChild(pw);
+    root.appendChild(sh);
+  }
   if (!BOARD) {
     /* Links to each staff member's board (each has its own password). */
     var sb = el('div', 'staff-links');
@@ -1029,39 +1048,56 @@ function bonusTier(kind, pct) {
   for (var i = 0; i < ts.length; i++) if (pct < ts[i].lt) return ts[i];
   return { p: 0, name: 'Unsatisfactory' };
 }
-function bonusFigures(slot) {
-  var d = state.data && state.data.periods && state.data.periods[slot];
-  var a = (d && d.accounting) || {};
-  var pc = function (n, b) { return (typeof a[n] === 'number' && typeof a[b] === 'number' && a[b] !== 0) ? a[n] / a[b] * 100 : null; };
-  return { cogs: pc('bar_cogs', 'bar_sales'), wages: pc('foh_wages', 'fb_sales'), cogsNote: a.cogsNote || null };
+var MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function bonusQuarter() {
+  var t = tradingToday();
+  var qm = Math.floor(t.getUTCMonth() / 3) * 3;               /* 0,3,6,9 */
+  var start = stamp(t.getUTCFullYear(), qm + 1, 1);
+  var thisMonth = stamp(t.getUTCFullYear(), t.getUTCMonth() + 1, 1);
+  var fyq = { 6: 1, 9: 2, 0: 3, 3: 4 }[qm];
+  return {
+    start: start, today: t,
+    endLast: addDays(thisMonth, -1),                 /* end of last month */
+    endPrev: addDays(addMonths(thisMonth, -1), -1),  /* end of the month before */
+    label: 'Q' + fyq + ' (' + MONTHS_SHORT[qm] + '–' + MONTHS_SHORT[qm + 2] + ')'
+  };
 }
+function bonusSlot(slot) {
+  var d = state.data && state.data.periods && state.data.periods[slot];
+  return (d && d.accounting) || null;
+}
+function pctOf(a, n, b) { return (a && typeof a[n] === 'number' && typeof a[b] === 'number' && a[b] !== 0) ? a[n] / a[b] * 100 : null; }
 function bonusPanel() {
   var b = BOARD.bonus, box = el('div', 'bonus-box');
-  box.appendChild(el('div', 'bonus-title', 'Bonus tracker'));
+  var bq = bonusQuarter();
+  box.appendChild(el('div', 'bonus-title', 'Bonus tracker · ' + esc(bq.label)));
   if (!state.data) { box.appendChild(el('div', 'bonus-row', 'Loading…')); return box; }
-  var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-  var t = tradingToday();
-  function rowFor(label, kind, pct, amount, note) {
+  function rowFor(label, kind, pct, amount, note, sub) {
     var row = el('div', 'bonus-row');
     var tier = bonusTier(kind, pct);
-    var left = el('span', 'bonus-k', label + (pct != null ? ' <b>' + pct.toFixed(1) + '%</b>' : ''));
-    row.appendChild(left);
-    var right;
-    if (!tier) right = el('span', 'bonus-pill pend', esc(note || 'Not available yet'));
-    else right = el('span', 'bonus-pill p' + Math.round(tier.p * 100), Math.round(tier.p * 100) + '% · ' + esc(fmtMoney(tier.p * amount, false)));
-    row.appendChild(right);
+    row.appendChild(el('span', 'bonus-k', label + (pct != null ? ' <b>' + pct.toFixed(1) + '%</b>' : '') + (sub ? ' <span class="bonus-s">' + esc(sub) + '</span>' : '')));
+    if (!tier) row.appendChild(el('span', 'bonus-pill pend', esc(note)));
+    else row.appendChild(el('span', 'bonus-pill p' + Math.round(tier.p * 100), Math.round(tier.p * 100) + '% · ' + esc(fmtMoney(tier.p * amount, false))));
     return row;
   }
-  var mtd = bonusFigures('bmtd'), last = bonusFigures('blast');
-  box.appendChild(el('div', 'bonus-sub', esc(months[t.getUTCMonth()]) + ' so far (on track for)'));
-  box.appendChild(rowFor('Wages', 'wages', mtd.wages, b.wages, 'Waiting for department wages'));
-  box.appendChild(rowFor('Bar COGS', 'cogs', mtd.cogs, b.cogs, 'After month-end stocktake'));
-  var lmName = months[(t.getUTCMonth() + 11) % 12];
-  box.appendChild(el('div', 'bonus-sub', esc(lmName) + ' result'));
-  box.appendChild(rowFor('Wages', 'wages', last.wages, b.wages, 'Not available'));
-  box.appendChild(rowFor('Bar COGS', 'cogs', last.cogs, b.cogs, 'After month-end stocktake'));
-  var foot = el('div', 'bonus-foot', 'Full bonus: wages ' + esc(fmtMoney(b.wages, false)) + ', bar COGS ' + esc(fmtMoney(b.cogs, false)) + ', customer feedback ' + esc(fmtMoney(b.feedback, false)) + ' (feedback isn’t tracked here). Wages under 23% / COGS under 28% = 100%.');
-  box.appendChild(foot);
+  box.appendChild(el('div', 'bonus-sub', 'Quarter so far — on track for'));
+  /* Wages: quarter to date. */
+  var wq = pctOf(bonusSlot('bq'), 'foh_wages', 'fb_sales');
+  box.appendChild(rowFor('Wages', 'wages', wq, b.wages, 'Waiting for department wages', MONTHS_SHORT[bq.start.getUTCMonth()] + '–today'));
+  /* Bar COGS: only months whose stocktake is in. */
+  var c1 = bonusSlot('bqc'), c2 = bonusSlot('bqc2'), cp = null, sub = null, note;
+  if (c1 && pctOf(c1, 'bar_cogs', 'bar_sales') != null) { cp = pctOf(c1, 'bar_cogs', 'bar_sales'); sub = MONTHS_SHORT[bq.start.getUTCMonth()] + '–' + MONTHS_SHORT[bq.endLast.getUTCMonth()]; }
+  else if (c2 && pctOf(c2, 'bar_cogs', 'bar_sales') != null) { cp = pctOf(c2, 'bar_cogs', 'bar_sales'); sub = MONTHS_SHORT[bq.start.getUTCMonth()] + '–' + MONTHS_SHORT[bq.endPrev.getUTCMonth()]; }
+  var firstMonth = MONTHS_SHORT[bq.start.getUTCMonth()];
+  note = 'After the ' + firstMonth + ' stocktake';
+  box.appendChild(rowFor('Bar COGS', 'cogs', cp, b.cogs, note, sub));
+  var total = 0, tw = bonusTier('wages', wq), tc = bonusTier('cogs', cp);
+  if (tw) total += tw.p * b.wages; if (tc) total += tc.p * b.cogs;
+  var tr = el('div', 'bonus-row bonus-total');
+  tr.appendChild(el('span', 'bonus-k', 'On track so far'));
+  tr.appendChild(el('span', 'bonus-k', '<b>' + esc(fmtMoney(total, false)) + '</b> of ' + esc(fmtMoney(b.wages + b.cogs, false))));
+  box.appendChild(tr);
+  box.appendChild(el('div', 'bonus-foot', 'Quarterly bonus: wages ' + esc(fmtMoney(b.wages, false)) + ' (under 23% = 100%), bar COGS ' + esc(fmtMoney(b.cogs, false)) + ' (under 28% = 100%). Customer feedback (' + esc(fmtMoney(b.feedback, false)) + ') isn’t tracked here. Bar COGS counts only months with a completed stocktake.'));
   return box;
 }
 
