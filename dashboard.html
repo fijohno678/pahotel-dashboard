@@ -254,6 +254,19 @@ body {
 .staff-link { padding: 6px 13px; border-radius: 50px; background: var(--c-teal-bg); color: var(--c-teal-text); border: 1px solid var(--c-teal-border); text-decoration: none; font-weight: 500; }
 .staff-link:hover { background: #d4eee7; }
 .staff-pw { font-size: 11px; color: var(--muted); margin: 0 6px 0 -4px; }
+.bonus-box { margin-left: auto; min-width: 250px; max-width: 330px; background: #fffdf9; border: 1px solid var(--border-med); border-radius: 12px; padding: 0.6rem 0.85rem; font-size: 12.5px; align-self: flex-start; }
+.bonus-title { font-family: 'Khand', sans-serif; font-size: 15px; font-weight: 600; color: var(--black); }
+.bonus-sub { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0.45rem 0 0.15rem; }
+.bonus-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 2px 0; }
+.bonus-k b { font-weight: 600; }
+.bonus-pill { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 20px; white-space: nowrap; }
+.bonus-pill.p100 { background: #1A7A3C; color: #fff; }
+.bonus-pill.p75 { background: #E8F5EE; color: #1A7A3C; border: 1px solid rgba(26,122,60,.3); }
+.bonus-pill.p50 { background: #FDF3DC; color: #9E6800; border: 1px solid rgba(158,104,0,.3); }
+.bonus-pill.p0 { background: #C0392B; color: #fff; }
+.bonus-pill.pend { background: var(--cream2); color: var(--muted); font-weight: 500; white-space: normal; text-align: right; }
+.bonus-foot { font-size: 10.5px; color: var(--muted); margin-top: 0.45rem; line-height: 1.45; }
+@media (max-width: 640px) { .bonus-box { margin-left: 0; max-width: none; width: 100%; } }
 .sec-head { --sec: #0D0D0D; display: flex; align-items: center; gap: 9px; margin: 1.5rem 0 0.7rem; }
 .sec-head:first-of-type { margin-top: 0.4rem; }
 .sec-dot { width: 12px; height: 12px; border-radius: 3px; background: var(--sec); }
@@ -349,7 +362,28 @@ function loadJson(key, fallback) {
 var RECON = loadJson('vd_recon', {});          /* metricKey -> 'confirmed' | 'flagged' */
 var ORG_OK = loadJson('vd_orgok', {});         /* sourceKey -> true */
 var MANUAL = loadJson('vd_manual', {});        /* rangeKey -> { from,to,period,values,attested,enteredAt } */
-function saveRecon() { try { localStorage.setItem('vd_recon', JSON.stringify(RECON)); } catch (e) {} }
+function saveRecon() { try { localStorage.setItem('vd_recon', JSON.stringify(RECON)); } catch (e) {} pushShared({ recon: RECON }); }
+/* Verification ticks and targets are kept on the server (owner only writes), so
+   they stay put across reloads and devices, and staff boards share the targets. */
+function pushShared(obj) {
+  if (BOARD) return;
+  try { fetch('/api/shared', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj) }); } catch (e) {}
+}
+function applyShared(sh) {
+  if (!sh) return;
+  if (sh.targets && typeof sh.targets === 'object') {
+    var d = defaultSettings().targets, merged = {};
+    for (var k in d) merged[k] = d[k];
+    for (var k2 in sh.targets) merged[k2] = sh.targets[k2];
+    SETTINGS.targets = merged; saveSettings();
+  } else if (!BOARD && sh.targets === null && SETTINGS.targets) {
+    pushShared({ targets: SETTINGS.targets }); /* first time: copy this browser's targets up */
+  }
+  if (!BOARD) {
+    if (sh.recon && typeof sh.recon === 'object') { RECON = sh.recon; try { localStorage.setItem('vd_recon', JSON.stringify(RECON)); } catch (e) {} }
+    else if (sh.recon === null && Object.keys(RECON).length) pushShared({ recon: RECON });
+  }
+}
 function saveOrgOk() { try { localStorage.setItem('vd_orgok', JSON.stringify(ORG_OK)); } catch (e) {} }
 function saveManual() { try { localStorage.setItem('vd_manual', JSON.stringify(MANUAL)); } catch (e) {} }
 /* Staff board mode: the server injects window.VD_BOARD on /board/<id> pages. */
@@ -373,14 +407,14 @@ var METRIC_DEFS = {
   fbSales: { section: 'fb', label: 'Revenue (F&B)', fmt: 'money', valueKey: 'fb_sales', needs: ['accounting'], goodDir: 'up',
              def: 'Sales - Chard Bar, Chard Restaurant, Coffee Shop, Gaming Bar, Plantation Bar, Tapd and Tapd (Food) · ' + KIT_CONFIG.taxLabel,
              check: 'Add up those seven Sales lines in your profit and loss for these dates.' },
-  fbCogs:  { section: 'fb', label: 'Cost of goods (F&B)', fmt: 'pct', dual: true, dollarsKey: 'fb_cogs', baseKey: 'fb_sales', needs: ['accounting'], goodDir: 'down',
+  fbCogs:  { section: 'fb', cogsLike: true, label: 'Cost of goods (F&B)', fmt: 'pct', dual: true, dollarsKey: 'fb_cogs', baseKey: 'fb_sales', needs: ['accounting'], goodDir: 'down',
              def: 'COGS - Chard Restaurant (Food), Coffee Shop, Coffee Shop Cakes, Tapd, Tapd (Food) and Wastage ÷ F&B revenue',
              check: 'Add up those six COGS lines (including Wastage), then divide by Revenue (F&B).' },
   fbWage:  { section: 'fb', label: 'Wage % (F&B)', fmt: 'pct', dual: true, dollarsKey: 'fb_wages', baseKey: 'fb_sales', needs: ['accounting'], goodDir: 'down',
              def: 'Beverage + Restaurant department wages, plus their share of staff super, ÷ F&B revenue',
              pending: 'Waiting for department wages from Xero (reconnect Xero on the Connections screen).',
              check: 'Add the Beverage and Restaurant department wages (see the Wages by department table on the accounts page), then divide by Revenue (F&B).' },
-  barCogs: { section: 'fb', label: 'Cost of Sales (Bar)', fmt: 'pct', dual: true, dollarsKey: 'bar_cogs', baseKey: 'bar_sales', needs: ['accounting'], goodDir: 'down',
+  barCogs: { section: 'fb', cogsLike: true, label: 'Cost of Sales (Bar)', fmt: 'pct', dual: true, dollarsKey: 'bar_cogs', baseKey: 'bar_sales', needs: ['accounting'], goodDir: 'down',
              def: 'COGS - Tapd ÷ bar sales (Sales - Chard Bar, Gaming Bar, Plantation Bar and Tapd)',
              check: 'Take COGS - Tapd and divide it by Sales - Chard Bar + Gaming Bar + Plantation Bar + Tapd.' },
   barWage: { section: 'fb', label: 'Wage % (Bar)', fmt: 'pct', dual: true, dollarsKey: 'bar_wages', baseKey: 'bar_sales', needs: ['accounting'], goodDir: 'down',
@@ -390,7 +424,7 @@ var METRIC_DEFS = {
   kSales:  { section: 'kitchen', label: 'Revenue (Food)', fmt: 'money', valueKey: 'kitchen_sales', needs: ['accounting'], goodDir: 'up',
              def: 'Food sales: Sales - Chard Restaurant, Coffee Shop and Tapd (Food) · ' + KIT_CONFIG.taxLabel,
              check: 'Add up those three Sales lines in your profit and loss for these dates.' },
-  kCogs:   { section: 'kitchen', label: 'Cost of goods (Kitchen)', fmt: 'pct', dual: true, dollarsKey: 'kitchen_cogs', baseKey: 'kitchen_sales', needs: ['accounting'], goodDir: 'down',
+  kCogs:   { section: 'kitchen', cogsLike: true, label: 'Cost of goods (Kitchen)', fmt: 'pct', dual: true, dollarsKey: 'kitchen_cogs', baseKey: 'kitchen_sales', needs: ['accounting'], goodDir: 'down',
              def: 'COGS - Chard Restaurant (Food), Coffee Shop, Coffee Shop Cakes, Tapd (Food) and Wastage ÷ Revenue (Food)',
              check: 'Add up those five COGS lines (not COGS - Tapd), then divide by Revenue (Food).' },
   kWage:   { section: 'kitchen', label: 'Wage % (Kitchen)', fmt: 'pct', dual: true, dollarsKey: 'kitchen_wages', baseKey: 'kitchen_sales', needs: ['accounting'], goodDir: 'down',
@@ -400,7 +434,7 @@ var METRIC_DEFS = {
   rSales:  { section: 'retail', label: 'Revenue (Retail)', fmt: 'money', valueKey: 'retail_sales', needs: ['accounting'], goodDir: 'up',
              def: 'Sales - Ripley DBS · ' + KIT_CONFIG.taxLabel,
              check: 'Check the Sales - Ripley DBS line in your profit and loss for these dates.' },
-  rCogs:   { section: 'retail', label: 'Cost of goods (Retail)', fmt: 'pct', dual: true, dollarsKey: 'retail_cogs', baseKey: 'retail_sales', needs: ['accounting'], goodDir: 'down',
+  rCogs:   { section: 'retail', cogsLike: true, label: 'Cost of goods (Retail)', fmt: 'pct', dual: true, dollarsKey: 'retail_cogs', baseKey: 'retail_sales', needs: ['accounting'], goodDir: 'down',
              def: 'COGS - Ripley St ÷ Retail revenue',
              check: 'Take the COGS - Ripley St line and divide by Revenue (Retail).' },
   rWage:   { section: 'retail', label: 'Wages & salaries (Retail)', fmt: 'pct', dual: true, dollarsKey: 'retail_wages', baseKey: 'retail_sales', needs: ['accounting'], goodDir: 'down',
@@ -426,7 +460,7 @@ var METRIC_DEFS = {
   acs:          { label: 'Average customer spend', fmt: 'money2', needs: ['accounting', 'pos'], goodDir: 'up',
                   def: 'Revenue (' + P.accounting + ', ' + KIT_CONFIG.taxLabel + ') ÷ transactions (' + P.pos + ')',
                   decision: 'Are upsells and pricing working? Move it with specials, bundles and staff prompts.' },
-  cogs:         { label: 'Cost of goods', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
+  cogs:         { cogsLike: true, label: 'Cost of goods', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
                   def: 'Your own definition (differs from the standard kit): every cost centre\u2019s COGS lines plus any other line named COGS, ' + KIT_CONFIG.taxLabel + ', as a % of all revenue · from ' + P.accounting,
                   decision: 'Rising as a share of revenue? Check supplier prices, portioning and waste.' },
   wage:         { label: 'Wage %', fmt: 'pct', dual: true, needs: ['accounting'], goodDir: 'down',
@@ -441,7 +475,7 @@ var METRIC_DEFS = {
   overheads:    { label: 'Overheads', defNote: true, fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'down',
                   def: 'Operating expenses excluding wages, super and cost of sales · from ' + P.accounting,
                   decision: 'Fixed costs drifting up? Review subscriptions, utilities and new recurring spend.' },
-  profit:       { label: 'Profit', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'up',
+  profit:       { cogsLike: true, label: 'Profit', fmt: 'money', dual: true, needs: ['accounting'], goodDir: 'up',
                   def: 'Revenue less cost of sales, wages, super and overheads · from ' + P.accounting,
                   decision: 'What the venue keeps after the costs you control. The bottom line of the board.' }
 };
@@ -585,6 +619,11 @@ function apiUrl(force) {
         + '&trend=' + monthKey(trendStart) + ':' + monthKey(trendEnd)
         + '&tz=' + encodeURIComponent(SETTINGS.timezone)
         + '&rollover=' + (+SETTINGS.rolloverHour || 0);
+  if (BOARD && BOARD.bonus) {
+    var bt = tradingToday(), bm = stamp(bt.getUTCFullYear(), bt.getUTCMonth() + 1, 1);
+    var lm = addMonths(bm, -1);
+    q += '&bmtd=' + iso(bm) + ':' + iso(bt) + '&blast=' + iso(lm) + ':' + iso(addDays(bm, -1));
+  }
   return (BOARD ? '/api/board/' + BOARD.id + '/metrics?' : '/api/metrics?') + q + (force ? '&refresh=1' : '');
 }
 
@@ -647,6 +686,7 @@ function fetchData(force) {
     return res.json();
   }).then(function (json) {
     state.data = json; state.fetchedAt = json.generatedAt ? new Date(json.generatedAt) : new Date(); state.loading = false;
+    applyShared(json.shared);
     render();
   }).catch(function (err) {
     state.loading = false;
@@ -682,7 +722,7 @@ function periodValues(slot) {  /* slot: 'cur' | 'prev' | 'yoy' */
   }
   if (pos) out.count = num(pos.count);
   if (ros) out.rosteredCost = num(ros.cost);
-  if (acc) { for (var ak in acc) { if (!(ak in out)) out[ak] = num(acc[ak]); } if (typeof acc.deptNote === 'string') out.deptNote = acc.deptNote; }
+  if (acc) { for (var ak in acc) { if (!(ak in out)) out[ak] = num(acc[ak]); } if (typeof acc.deptNote === 'string') out.deptNote = acc.deptNote; if (typeof acc.cogsNote === 'string') out.cogsNote = acc.cogsNote; }
   return out;
 }
 function num(v) { return (typeof v === 'number' && isFinite(v)) ? v : null; }
@@ -804,9 +844,24 @@ function compare(key, cur, base) {
 
 /* Targets and alerts: the owner sets a target per metric in Settings; a card
    flags when its value sits on the wrong side of that target. */
-function metricTarget(key) {
+/* Dollar targets (e.g. Revenue (Food) $90,000) are entered PER WEEK and scaled
+   to the period being viewed: weeks = days x 52 / 365 (a full year = 52 weeks).
+   Percentage targets are not scaled. */
+function isWeeklyTarget(key) { var d = METRIC_DEFS[key]; return !!d && !d.dual && (d.fmt === 'money' || d.fmt === 'money2'); }
+function periodWeeks() {
+  var r = resolvePeriod(state.period, state.customFrom, state.customTo);
+  var days = Math.round((r.to.getTime() - r.from.getTime()) / 86400000) + 1;
+  return days * 52 / 365;
+}
+function weeklyTarget(key) {
   var t = SETTINGS.targets && SETTINGS.targets[key];
   return (typeof t === 'number' && isFinite(t)) ? t : null;
+}
+function metricTarget(key, weeks) {
+  var t = weeklyTarget(key);
+  if (t == null) return null;
+  if (isWeeklyTarget(key)) return t * (weeks != null ? weeks : periodWeeks());
+  return t;
 }
 function targetBreached(key, v) {
   if (v == null || v === 'dash') return false;
@@ -858,6 +913,7 @@ function render() {
   var top = el('div', 'topbar');
   top.appendChild(el('div', 'venue-name', esc(BOARD ? BOARD.venue : SETTINGS.venueName)));
   top.appendChild(el('div', 'topbar-sub', (BOARD ? esc(BOARD.name) + '\u2019s board · ' + esc(BOARD.role) : 'Your numbers') + ' · ' + esc(KIT_CONFIG.taxLabel) + ' · financial year ' + esc(KIT_CONFIG.fyLabel)));
+  if (BOARD && BOARD.bonus) top.appendChild(bonusPanel());
   root.appendChild(top);
   root.appendChild(el('div', 'top-rule'));
 
@@ -916,6 +972,19 @@ function render() {
     root.appendChild(fb);
   }
   if (state.fetchError) root.appendChild(el('div', 'banner banner-coral', esc(state.fetchError)));
+  if (!BOARD && state.data && state.data.stocktake && !state.data.stocktake.previousDone) {
+    var stk = state.data.stocktake, mn = ['January','February','March','April','May','June','July','August','September','October','November','December'][+stk.previous.slice(5) - 1];
+    var sbn = el('div', 'banner banner-amber');
+    sbn.innerHTML = '<b>' + esc(mn) + ' cost of goods is hidden</b> (here and on staff boards) until the month-end stocktake is in Xero. ';
+    var sbtn = el('button', 'btn-small', 'Stocktake is posted \u2014 show ' + esc(mn));
+    sbtn.onclick = function () {
+      var o = {}; o[stk.previous] = true;
+      sbtn.disabled = true;
+      fetch('/api/shared', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stocktake: o }) }).then(function () { fetchData(true); });
+    };
+    sbn.appendChild(sbtn);
+    root.appendChild(sbn);
+  }
   if (!isManual() && state.data && state.data.protected === false) {
     var pwb = el('div', 'banner banner-coral');
     pwb.innerHTML = '<b>No password set yet.</b> Anyone with this link can see your numbers. Ask your AI to set a dashboard password.';
@@ -944,6 +1013,56 @@ function render() {
   if (goR) goR.onclick = function () { state.view = 'recon'; render(); };
   var goC = document.getElementById('go-conn');
   if (goC) goC.onclick = function () { state.view = 'connections'; render(); };
+}
+
+/* ---------- FOH bonus tracker (from the owner's bonus sheet) ----------
+   Monthly. Bar COGS % = COGS - Tapd / bar sales. FOH labour % = FOH wages
+   (General + Kitchen + Restaurant + Beverage, with super share) / F&B revenue.
+   Tiers: Outstanding 100% / Good 75% / Satisfactory 50% / Unsatisfactory none. */
+var BONUS_TIERS = {
+  cogs:  [ { lt: 28, p: 1, name: 'Outstanding' }, { lt: 29, p: 0.75, name: 'Good' }, { lt: 30, p: 0.5, name: 'Satisfactory' } ],
+  wages: [ { lt: 23, p: 1, name: 'Outstanding' }, { lt: 24, p: 0.75, name: 'Good' }, { lt: 25, p: 0.5, name: 'Satisfactory' } ]
+};
+function bonusTier(kind, pct) {
+  if (pct == null) return null;
+  var ts = BONUS_TIERS[kind];
+  for (var i = 0; i < ts.length; i++) if (pct < ts[i].lt) return ts[i];
+  return { p: 0, name: 'Unsatisfactory' };
+}
+function bonusFigures(slot) {
+  var d = state.data && state.data.periods && state.data.periods[slot];
+  var a = (d && d.accounting) || {};
+  var pc = function (n, b) { return (typeof a[n] === 'number' && typeof a[b] === 'number' && a[b] !== 0) ? a[n] / a[b] * 100 : null; };
+  return { cogs: pc('bar_cogs', 'bar_sales'), wages: pc('foh_wages', 'fb_sales'), cogsNote: a.cogsNote || null };
+}
+function bonusPanel() {
+  var b = BOARD.bonus, box = el('div', 'bonus-box');
+  box.appendChild(el('div', 'bonus-title', 'Bonus tracker'));
+  if (!state.data) { box.appendChild(el('div', 'bonus-row', 'Loading…')); return box; }
+  var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  var t = tradingToday();
+  function rowFor(label, kind, pct, amount, note) {
+    var row = el('div', 'bonus-row');
+    var tier = bonusTier(kind, pct);
+    var left = el('span', 'bonus-k', label + (pct != null ? ' <b>' + pct.toFixed(1) + '%</b>' : ''));
+    row.appendChild(left);
+    var right;
+    if (!tier) right = el('span', 'bonus-pill pend', esc(note || 'Not available yet'));
+    else right = el('span', 'bonus-pill p' + Math.round(tier.p * 100), Math.round(tier.p * 100) + '% · ' + esc(fmtMoney(tier.p * amount, false)));
+    row.appendChild(right);
+    return row;
+  }
+  var mtd = bonusFigures('bmtd'), last = bonusFigures('blast');
+  box.appendChild(el('div', 'bonus-sub', esc(months[t.getUTCMonth()]) + ' so far (on track for)'));
+  box.appendChild(rowFor('Wages', 'wages', mtd.wages, b.wages, 'Waiting for department wages'));
+  box.appendChild(rowFor('Bar COGS', 'cogs', mtd.cogs, b.cogs, 'After month-end stocktake'));
+  var lmName = months[(t.getUTCMonth() + 11) % 12];
+  box.appendChild(el('div', 'bonus-sub', esc(lmName) + ' result'));
+  box.appendChild(rowFor('Wages', 'wages', last.wages, b.wages, 'Not available'));
+  box.appendChild(rowFor('Bar COGS', 'cogs', last.cogs, b.cogs, 'After month-end stocktake'));
+  var foot = el('div', 'bonus-foot', 'Full bonus: wages ' + esc(fmtMoney(b.wages, false)) + ', bar COGS ' + esc(fmtMoney(b.cogs, false)) + ', customer feedback ' + esc(fmtMoney(b.feedback, false)) + ' (feedback isn’t tracked here). Wages under 23% / COGS under 28% = 100%.');
+  box.appendChild(foot);
+  return box;
 }
 
 function esc(s) {
@@ -1093,6 +1212,7 @@ function metricCard(key, cur, prev, yoy, r) {
     card.appendChild(headline(key, cur, v));
     if (key === 'acs' && v === 'dash') card.appendChild(el('div', 'm-sub', 'No transactions in this period'));
     if (def.pending && shareDollars(key, cur) == null) card.appendChild(el('div', 'm-sub', esc(cur.deptNote || def.pending)));
+    if (def.cogsLike && cur.cogsNote && (metricValue(key, cur) == null)) card.appendChild(el('div', 'm-sub', esc(cur.cogsNote)));
     if (key === 'wage' && P.rostering && cur.rosteredCost != null && cur.revenue != null && cur.revenue !== 0) {
       var pj = ((cur.rosteredCost / cur.revenue) * 100).toFixed(1);
       var ps = el('div', 'm-sub');
@@ -1221,7 +1341,7 @@ function targetMeter(key, pf) {
   wrap.appendChild(track);
   var status = bad ? (def.goodDir === 'down' ? 'over target' : 'below target') : 'on track';
   var cap = el('div', 'meter-cap');
-  cap.innerHTML = 'Target ' + esc(fmtTarget(key, t)) + ' · <span class="' + (bad ? 'bad' : 'good') + '">' + status + '</span>';
+  cap.innerHTML = 'Target ' + esc(fmtTarget(key, t)) + (isWeeklyTarget(key) ? ' <span style="opacity:.75">(' + esc(fmtMoney(weeklyTarget(key), false)) + '/week)</span>' : '') + ' · <span class="' + (bad ? 'bad' : 'good') + '">' + status + '</span>';
   wrap.appendChild(cap);
   return wrap;
 }
@@ -1315,7 +1435,9 @@ function trendBars(key, r) {
     var vy = H - ((vals[i] - minv) / span) * H;
     var top = Math.min(vy, zeroY), h = Math.max(1.5, Math.abs(zeroY - vy));
     var cls = 'tbar';
-    if (tgt != null) cls += ((def.goodDir === 'down') ? (vals[i] > tgt) : (vals[i] < tgt)) ? ' bad' : ' good';
+    var tgi = tgt;
+    if (tgt != null && isWeeklyTarget(key)) { var mp = months[i].split('-'); tgi = metricTarget(key, new Date(Date.UTC(+mp[0], +mp[1], 0)).getUTCDate() * 52 / 365); }
+    if (tgi != null) cls += ((def.goodDir === 'down') ? (vals[i] > tgi) : (vals[i] < tgi)) ? ' bad' : ' good';
     if (months[i] === curMonth) cls += ' cur';
     var rect = document.createElementNS(NS, 'rect');
     rect.setAttribute('class', cls);
@@ -1750,7 +1872,7 @@ function renderSettings(root) {
 
   /* Targets and alerts (Monday-review thresholds) */
   root.appendChild(el('div', 'screen-title', 'Targets and alerts'));
-  root.appendChild(el('p', 'screen-sub', 'Set the level you want each number to stay on the right side of. Cost and profit targets are a share of revenue (30 means 30% of revenue); transaction and spend targets are a plain number. A card flags amber when it slips to the wrong side. Revenue is shown against its own recent average instead of a fixed target.'));
+  root.appendChild(el('p', 'screen-sub', 'Set the level you want each number to stay on the right side of. Cost and profit targets are a share of revenue (30 means 30% of revenue). Revenue targets are an average PER WEEK: the dashboard scales them to the period you\u2019re viewing (a month is about 4.3 weeks, a year 52 weeks). A card flags amber when it slips to the wrong side. Revenue is shown against its own recent average instead of a fixed target.'));
   var tgrid = el('div', 'set-grid');
   CHOSEN.forEach(function (k) {
     var mdef = METRIC_DEFS[k];
@@ -1764,10 +1886,10 @@ function renderSettings(root) {
       if (!SETTINGS.targets) SETTINGS.targets = {};
       var val = parseFloat(inp.value);
       if (isFinite(val)) SETTINGS.targets[k] = val; else delete SETTINGS.targets[k];
-      saveSettings(); render();
+      saveSettings(); pushShared({ targets: SETTINGS.targets }); render();
     };
     cell.appendChild(inp);
-    var unit = mdef.dual ? 'percent of revenue' : (mdef.fmt === 'int' ? 'count' : KIT_CONFIG.currency);
+    var unit = mdef.dual ? 'percent of revenue' : (mdef.fmt === 'int' ? 'count' : KIT_CONFIG.currency + ' per week (scaled to the period)');
     cell.appendChild(el('div', 'set-note', (mdef.goodDir === 'down' ? 'Alerts when above this ' : 'Alerts when below this ') + unit + '.'));
     tgrid.appendChild(cell);
   });

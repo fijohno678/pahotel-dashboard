@@ -107,6 +107,7 @@ const ADAPTERS = {
       const rep = await xeroPnl(env, h, { fromDate: q.from, toDate: q.to }, 120);
       const f = xeroColumns(rep, 1)[0].figures;
       applyDeptWages(f, await xeroDeptPnl(env, h, { fromDate: q.from, toDate: q.to }, 120));
+      try { applyStockGate(f, monthsInRange(q.from, q.to), await stocktakeStatus(env, h)); } catch (e) {}
       return f;
     },
     async fetchMonthly(env, h, q) {
@@ -139,6 +140,7 @@ const ADAPTERS = {
         if (d.unavailable) break;
         applyDeptWages(byMonth[mo], d);
       }
+      try { const st = await stocktakeStatus(env, h); months.forEach((mo) => applyStockGate(byMonth[mo], [mo], st)); } catch (e) {}
       months.forEach((mo) => {
         const f = byMonth[mo];
         out.months.push(mo);
@@ -415,11 +417,60 @@ function applyDeptWages(figures, d) {
     return;
   }
   ['fb', 'bar', 'kitchen', 'gaming', 'retail'].forEach((k) => { figures[k + '_wages'] = acc[k] / 100; });
+  /* FOH labour for the bonus sheet: General + Food (Kitchen, Restaurant) + Beverage,
+     each with its super share; no Gaming, Ripley or Johnson. */
+  let foh = 0;
+  depts.forEach((k) => { if (/general|kitchen|restaurant|beverage/i.test(k)) foh += (d.wages[k] || 0) + share(k); });
+  figures.foh_wages = foh / 100;
   /* General department wages + its share of super move from staff wages to Overheads. */
   figures.wagesSuper = Math.round(figures.wagesSuper * 100 - acc.overheads) / 100;
   figures.overheads = Math.round(figures.overheads * 100 + acc.overheads) / 100;
   figures.generalWages = acc.overheads / 100;
   figures.unassignedWages = acc.unassigned / 100;
+}
+
+/* ---------------- Month-end stocktake gate (owner, 9 Oct 2026) -------------
+   Cost of goods is only meaningful once the month-end stocktake journal is in
+   Xero, so it is hidden for any month that doesn't have it yet. A month counts
+   as "stocktaken" when its P&L has a non-zero stock line (name matching
+   STOCK_RE, e.g. "Opening Stock" / "Closing Stock" / "Stock Movement").
+   The owner can also mark a month as stocktaken from the dashboard. */
+const STOCK_RE = /\b(stock|inventory)\b/i;
+async function stocktakeStatus(env, h) {
+  const now = new Date();
+  const last = now.toISOString().slice(0, 7);
+  const [ly, lm] = last.split('-').map(Number);
+  const ld = new Date(Date.UTC(ly, lm, 0)).getUTCDate();
+  const rep = await xeroPnl(env, h, { fromDate: last + '-01', toDate: last + '-' + String(ld).padStart(2, '0'), periods: '11', timeframe: 'MONTH' }, 3600);
+  const months = monthList(new Date(Date.UTC(ly, lm - 12, 1)).toISOString().slice(0, 7), last); /* oldest..newest, 12 */
+  const done = {};
+  (rep.Rows || []).forEach((sec) => {
+    if (sec.RowType !== 'Section') return;
+    const cls = classifySection(sec.Title);
+    if (cls !== 'cogs' && cls !== 'opex') return;
+    (sec.Rows || []).forEach((r) => {
+      if (r.RowType !== 'Row' || !STOCK_RE.test(r.Cells && r.Cells[0] ? r.Cells[0].Value : '')) return;
+      for (let i = 0; i < 12; i++) {
+        if (toCents(r.Cells && r.Cells[i + 1] ? r.Cells[i + 1].Value : 0) !== 0) done[months[11 - i]] = true;
+      }
+    });
+  });
+  /* The owner can also mark a month's stocktake as posted (one click). */
+  try { const sh = JSON.parse((await env.TOKENS.get('sys:shared')) || '{}'); Object.keys(sh.stocktake || {}).forEach((m) => { if (sh.stocktake[m]) done[m] = true; }); } catch (e) {}
+  /* Only the current month and last month can be waiting: the current month
+     always is (stocktake happens at month end); last month until its stocktake
+     is detected or marked. Older months are treated as closed. */
+  return { active: true, done: done, window: [months[10], months[11]], current: months[11], previous: months[10] };
+}
+function monthsInRange(from, to) { return monthList(from.slice(0, 7), to.slice(0, 7)); }
+const COGS_FIELDS = ['fb_cogs', 'kitchen_cogs', 'bar_cogs', 'retail_cogs', 'cogs'];
+function applyStockGate(figures, months, st) {
+  if (!figures || !st || !st.active) return;
+  const pending = months.filter((m) => st.window.indexOf(m) >= 0 && !st.done[m]);
+  if (!pending.length) return;
+  COGS_FIELDS.forEach((k) => { if (k in figures) figures[k] = null; });
+  const MN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  figures.cogsNote = 'Cost of goods shows once the month-end stocktake for ' + pending.map((m) => MN[+m.slice(5) - 1]).join(' and ') + ' is in Xero.';
 }
 
 function xeroColumns(rep, n) {
@@ -445,7 +496,7 @@ function xeroColumns(rep, n) {
         const key = normName(label);
         col.byName[key] = (col.byName[key] || 0) + amt(r);
         let as = cls;
-        const isCogs = (cls === 'cogs' || cls === 'opex') && (ALL_CENTRE_COGS[key] || COGS_RE.test(label));
+        const isCogs = ((cls === 'cogs' || cls === 'opex') && (ALL_CENTRE_COGS[key] || COGS_RE.test(label))) || (cls === 'cogs' && STOCK_RE.test(label));
         if (isCogs) { as = 'cogs'; col.c.cogsAll += amt(r); }
         else if (cls === 'opex' && isWageLine(label)) { as = 'wages'; col.c.wages += amt(r); }
         else if (cls === 'cogs') { as = 'opex'; }
@@ -1038,6 +1089,8 @@ async function apiMetrics(env, url, board) {
   const cur = parseRange(url.searchParams.get('cur'));
   if (!cur) return json({ error: 'bad cur range' }, 400);
   const prev = parseRange(url.searchParams.get('prev'));
+  const bmtd = parseRange(url.searchParams.get('bmtd'));
+  const blast = parseRange(url.searchParams.get('blast'));
   const yoy = parseRange(url.searchParams.get('yoy'));
   const trend = parseMonthRange(url.searchParams.get('trend'));
   const tz = url.searchParams.get('tz') || 'Australia/Sydney';
@@ -1058,6 +1111,7 @@ async function apiMetrics(env, url, board) {
   const cacheKey = 'metricscache:' + [
     url.searchParams.get('cur') || '', url.searchParams.get('prev') || '',
     url.searchParams.get('yoy') || '', url.searchParams.get('trend') || '',
+    url.searchParams.get('bmtd') || '', url.searchParams.get('blast') || '',
     tz, rollover
   ].join('|');
   const force = url.searchParams.get('refresh') === '1';
@@ -1071,6 +1125,8 @@ async function apiMetrics(env, url, board) {
     periods.cur = await fetchSlot(env, { ...base, ...cur });
     periods.prev = prev ? await fetchSlot(env, { ...base, ...prev }) : null;
     periods.yoy = yoy ? await fetchSlot(env, { ...base, ...yoy }) : null;
+    if (bmtd) periods.bmtd = await fetchSlot(env, { ...base, ...bmtd });
+    if (blast) periods.blast = await fetchSlot(env, { ...base, ...blast });
 
     let trendOut = null;
     if (trend) {
@@ -1098,7 +1154,28 @@ async function apiMetrics(env, url, board) {
     periods: data.periods,
     trend: data.trend
   };
-  return json(board ? filterForBoard(payload, board) : payload);
+  let shared = {};
+  try { shared = JSON.parse((await env.TOKENS.get('sys:shared')) || '{}'); } catch (e) {}
+  if (board) { const fp = filterForBoard(payload, board); fp.shared = { targets: shared.targets || {} }; return json(fp); }
+  payload.shared = { targets: shared.targets || null, recon: shared.recon || null };
+  try {
+    const st = await stocktakeStatus(env, makeHelpers(env, 'accounting'));
+    payload.stocktake = { previous: st.previous, previousDone: !!st.done[st.previous], current: st.current };
+  } catch (e) {}
+  return json(payload);
+}
+/* Owner's verification ticks and KPI targets, kept on the server so they stay
+   put across devices and reloads, and staff boards see the same targets. */
+async function apiShared(env, request) {
+  let body; try { body = await request.json(); } catch (e) { return json({ ok: false }, 400); }
+  let shared = {};
+  try { shared = JSON.parse((await env.TOKENS.get('sys:shared')) || '{}'); } catch (e) {}
+  if (body && body.targets && typeof body.targets === 'object') shared.targets = body.targets;
+  if (body && body.recon && typeof body.recon === 'object') shared.recon = body.recon;
+  if (body && body.stocktake && typeof body.stocktake === 'object') { shared.stocktake = shared.stocktake || {}; Object.keys(body.stocktake).forEach((m) => { if (/^\d{4}-\d{2}$/.test(m)) shared.stocktake[m] = !!body.stocktake[m]; }); }
+  shared.updated = new Date().toISOString();
+  await env.TOKENS.put('sys:shared', JSON.stringify(shared));
+  return json({ ok: true });
 }
 
 /* ---------------- Staff boards (owner's request, 8 Oct 2026) ----------------
@@ -1106,8 +1183,11 @@ async function apiMetrics(env, url, board) {
    password (set by the owner while logged in). Their data feed is cut down
    SERVER-SIDE to only their fields, so nothing else ever reaches their browser. */
 const BOARDS = {
-  adam:    { name: 'Adam',    role: 'Bar',     metrics: ['fbSales', 'fbCogs', 'fbWage', 'barCogs', 'barWage'], fields: ['fb_sales', 'fb_cogs', 'fb_wages', 'bar_sales', 'bar_cogs', 'bar_wages'] },
-  amy:     { name: 'Amy',     role: 'F&B',     metrics: ['fbSales', 'fbCogs', 'fbWage'],            fields: ['fb_sales', 'fb_cogs', 'fb_wages'] },
+  /* bonus: monthly FOH bonus sheet (FOH Bonus - Amy Dyason and Adam Fitzgerald.xlsx) */
+  adam:    { name: 'Adam',    role: 'Bar',     metrics: ['fbSales', 'fbCogs', 'fbWage', 'barCogs', 'barWage'], fields: ['fb_sales', 'fb_cogs', 'fb_wages', 'bar_sales', 'bar_cogs', 'bar_wages', 'foh_wages'],
+             bonus: { cogs: 500, wages: 500, feedback: 250 } },
+  amy:     { name: 'Amy',     role: 'F&B',     metrics: ['fbSales', 'fbCogs', 'fbWage'],            fields: ['fb_sales', 'fb_cogs', 'fb_wages', 'bar_sales', 'bar_cogs', 'foh_wages'],
+             bonus: { cogs: 275, wages: 275, feedback: 200 } },
   stephen: { name: 'Stephen', role: 'Kitchen', metrics: ['kSales', 'kCogs', 'kWage'],               fields: ['kitchen_sales', 'kitchen_cogs', 'kitchen_wages'] }
 };
 const BOARD_VENUE = 'PA Hotel';
@@ -1120,7 +1200,8 @@ function pickFields(obj, fields) {
   return out;
 }
 function filterForBoard(p, board) {
-  const slot = (sl) => (sl ? { accounting: pickFields(sl.accounting, board.fields), pos: null, rostering: null } : null);
+  const flds = board.fields.concat(['cogsNote', 'deptNote']);
+  const slot = (sl) => (sl ? { accounting: pickFields(sl.accounting, flds), pos: null, rostering: null } : null);
   const acc = p.sources.accounting || {};
   return {
     generatedAt: p.generatedAt,
@@ -1130,7 +1211,7 @@ function filterForBoard(p, board) {
       accounting: { configured: !!acc.configured, connected: !!acc.connected, lastSync: acc.lastSync || null, error: acc.error || null },
       pos: { configured: false }, rostering: { configured: false }
     },
-    periods: { cur: slot(p.periods.cur), prev: slot(p.periods.prev), yoy: slot(p.periods.yoy) },
+    periods: { cur: slot(p.periods.cur), prev: slot(p.periods.prev), yoy: slot(p.periods.yoy), bmtd: slot(p.periods.bmtd), blast: slot(p.periods.blast) },
     trend: p.trend ? { months: p.trend.months, accounting: pickFields(p.trend.accounting, board.fields), pos: null } : null
   };
 }
@@ -1201,7 +1282,7 @@ async function serveBoard(env, request, url, id) {
   const hasPw = await boardPasswordSet(env, id);
   if (owner && (!hasPw || url.searchParams.get('setup') === '1')) return htmlResponse(boardSetupPage(id, board, hasPw));
   if (owner || staff) {
-    const cfg = { id: id, name: board.name, role: board.role, metrics: board.metrics, venue: BOARD_VENUE, owner: owner };
+    const cfg = { id: id, name: board.name, role: board.role, metrics: board.metrics, venue: BOARD_VENUE, owner: owner, bonus: board.bonus || null };
     return htmlResponse(dashboardHtml.replace('<div id="app">', '<script>window.VD_BOARD = ' + JSON.stringify(cfg).replace(/</g, '\\u003c') + ';</script>\n<div id="app">'));
   }
   return htmlResponse(hasPw ? boardLoginPage(id, board) : boardNotReadyPage(board));
@@ -1274,6 +1355,10 @@ export default {
         if (!(loggedIn || await validBoardSession(request, env, bid))) return json({ error: 'auth' }, 401);
         return apiMetrics(env, url, BOARDS[bid]);
       }
+    }
+    if (path === '/api/shared' && request.method === 'POST') {
+      if (!loggedIn) return json({ error: 'auth' }, 401);
+      return apiShared(env, request);
     }
     if (path === '/accounts' && request.method === 'GET') {
       if (!loggedIn) return Response.redirect(url.origin + '/', 302);
