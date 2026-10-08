@@ -276,6 +276,11 @@ const CENTRES = {
     cogs: ['COGS - Ripley St'],
     wages: [] /* waiting on Xero: Ripley DBS wages + super accounts */
   },
+  bar: {
+    sales: ['Sales - Chard Bar', 'Sales - Gaming Bar', 'Sales - Plantation Bar', 'Sales - Tapd'],
+    cogs: ['COGS - Tapd'],
+    wages: null /* Adam's Cost of Sales (Bar) tile: COGS - Tapd / bar sales */
+  },
   gaming: {
     sales: ['Gaming Machines Income', 'Keno Income'],
     cogs: ['Gaming - State Tax', 'Gaming Monitoring Fees'],
@@ -895,7 +900,7 @@ async function fetchSlot(env, q) {
 
 const METRICS_CACHE_TTL = 120; /* seconds: brief cache for live provider data */
 
-async function apiMetrics(env, url) {
+async function apiMetrics(env, url, board) {
   const cur = parseRange(url.searchParams.get('cur'));
   if (!cur) return json({ error: 'bad cur range' }, 400);
   const prev = parseRange(url.searchParams.get('prev'));
@@ -952,13 +957,118 @@ async function apiMetrics(env, url) {
     }
   }
 
-  return json({
+  const payload = {
     generatedAt: data.generatedAt,
     protected: true,
     sources: { accounting: sAcc, pos: sPos, rostering: sRos },
     periods: data.periods,
     trend: data.trend
-  });
+  };
+  return json(board ? filterForBoard(payload, board) : payload);
+}
+
+/* ---------------- Staff boards (owner's request, 8 Oct 2026) ----------------
+   Each staff member gets their own page at /board/<id> with their own
+   password (set by the owner while logged in). Their data feed is cut down
+   SERVER-SIDE to only their fields, so nothing else ever reaches their browser. */
+const BOARDS = {
+  adam:    { name: 'Adam',    role: 'Bar',     metrics: ['fbSales', 'fbCogs', 'fbWage', 'barCogs'], fields: ['fb_sales', 'fb_cogs', 'fb_wages', 'bar_sales', 'bar_cogs'] },
+  amy:     { name: 'Amy',     role: 'F&B',     metrics: ['fbSales', 'fbCogs', 'fbWage'],            fields: ['fb_sales', 'fb_cogs', 'fb_wages'] },
+  stephen: { name: 'Stephen', role: 'Kitchen', metrics: ['kSales', 'kCogs', 'kWage'],               fields: ['kitchen_sales', 'kitchen_cogs', 'kitchen_wages'] }
+};
+const BOARD_VENUE = 'PA Hotel';
+function pickFields(obj, fields) {
+  if (!obj) return null;
+  const out = {};
+  fields.forEach((f) => { if (f in obj) out[f] = obj[f]; });
+  return out;
+}
+function filterForBoard(p, board) {
+  const slot = (sl) => (sl ? { accounting: pickFields(sl.accounting, board.fields), pos: null, rostering: null } : null);
+  const acc = p.sources.accounting || {};
+  return {
+    generatedAt: p.generatedAt,
+    protected: true,
+    board: true,
+    sources: {
+      accounting: { configured: !!acc.configured, connected: !!acc.connected, lastSync: acc.lastSync || null, error: acc.error || null },
+      pos: { configured: false }, rostering: { configured: false }
+    },
+    periods: { cur: slot(p.periods.cur), prev: slot(p.periods.prev), yoy: slot(p.periods.yoy) },
+    trend: p.trend ? { months: p.trend.months, accounting: pickFields(p.trend.accounting, board.fields), pos: null } : null
+  };
+}
+async function boardPasswordSet(env, id) {
+  return !!(env.TOKENS && await env.TOKENS.get('sys:board_hash:' + id));
+}
+async function makeBoardSession(env, id) {
+  const payload = 'b1.' + id + '.' + Math.floor(Date.now() / 1000);
+  return payload + '.' + await hmacB64(await getSessionKey(env), payload);
+}
+async function validBoardSession(request, env, id) {
+  const token = getCookie(request, 'vd_board_' + id);
+  if (!token) return false;
+  const i = token.lastIndexOf('.');
+  if (i < 0) return false;
+  const payload = token.slice(0, i);
+  const parts = payload.split('.');
+  if (parts[0] !== 'b1' || parts[1] !== id) return false;
+  if (!timingSafeEqual(token.slice(i + 1), await hmacB64(await getSessionKey(env), payload))) return false;
+  const issued = parseInt(parts[2], 10);
+  return !!issued && (Date.now() / 1000 - issued) <= SESSION_TTL;
+}
+function boardCookie(id, token, maxAge) {
+  return 'vd_board_' + id + '=' + encodeURIComponent(token) + '; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=' + maxAge;
+}
+async function apiBoardSetup(env, request, id) {
+  /* Only the OWNER (logged in to the main dashboard) can set or change a staff password. */
+  if (!(await isLoggedIn(request, env))) return json({ ok: false, error: 'owner_only' }, 403);
+  let body; try { body = await request.json(); } catch (e) { return json({ ok: false }, 400); }
+  const passcode = String((body && body.passcode) || '');
+  if (passcode.length < 6) return json({ ok: false, error: 'too_short' }, 400);
+  const saltB = new Uint8Array(16); crypto.getRandomValues(saltB);
+  const saltHex = Array.from(saltB).map((x) => x.toString(16).padStart(2, '0')).join('');
+  await env.TOKENS.put('sys:board_hash:' + id, saltHex + '.' + (await pbkdf2B64(passcode, saltHex)));
+  return json({ ok: true });
+}
+async function apiBoardLogin(env, request, id) {
+  let body; try { body = await request.json(); } catch (e) { return json({ ok: false }, 400); }
+  const passcode = String((body && body.passcode) || '');
+  const stored = await env.TOKENS.get('sys:board_hash:' + id);
+  if (!stored) return json({ ok: false }, 400);
+  const dot = stored.indexOf('.');
+  if (!timingSafeEqual(await pbkdf2B64(passcode, stored.slice(0, dot)), stored.slice(dot + 1))) return json({ ok: false }, 401);
+  return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Set-Cookie': boardCookie(id, await makeBoardSession(env, id), SESSION_TTL) } });
+}
+function boardSetupPage(id, board, hasPassword) {
+  return setupPage()
+    .replace('<title>Set your password</title>', '<title>' + board.name + '\u2019s board</title>')
+    .replace('<h1>Set your password</h1>', '<h1>' + board.name + '\u2019s board (' + board.role + ')</h1>')
+    .replace(/<p>Choose a password for your dashboard\.[^<]*<\/p>/, '<p>' + (hasPassword ? 'Change' : 'Choose') + ' the password ' + board.name + ' will use to open this board. Only you can set it, while you\u2019re signed in to your main dashboard. At least 6 characters.</p>' + (hasPassword ? '<p><a href="/board/' + id + '?view=1">Skip, just view the board</a></p>' : ''))
+    .replace('Save and open my dashboard', 'Save ' + board.name + '\u2019s password')
+    .replace('"/api/setup"', '"/api/board/' + id + '/setup"')
+    .replace('if(r.ok){location.reload();}', 'if(r.ok){location.href="/board/' + id + '?view=1";}');
+}
+function boardLoginPage(id, board) {
+  return loginPage()
+    .replace('<h1>Your dashboard</h1>', '<h1>' + board.name + '\u2019s board</h1>')
+    .replace('Enter the password for this dashboard.', 'Enter your password to see your numbers.')
+    .replace('"/api/login"', '"/api/board/' + id + '/login"');
+}
+function boardNotReadyPage(board) {
+  return loginPage().replace(/<form[\s\S]*<\/form>/, '<p>This board isn\u2019t set up yet. Ask your manager to set your password.</p>').replace('<h1>Your dashboard</h1>', '<h1>' + board.name + '\u2019s board</h1>').replace('<p>Enter the password for this dashboard.</p>', '');
+}
+async function serveBoard(env, request, url, id) {
+  const board = BOARDS[id];
+  const owner = await isLoggedIn(request, env);
+  const staff = await validBoardSession(request, env, id);
+  const hasPw = await boardPasswordSet(env, id);
+  if (owner && (!hasPw || url.searchParams.get('setup') === '1')) return htmlResponse(boardSetupPage(id, board, hasPw));
+  if (owner || staff) {
+    const cfg = { id: id, name: board.name, role: board.role, metrics: board.metrics, venue: BOARD_VENUE, owner: owner };
+    return htmlResponse(dashboardHtml.replace('<div id="app">', '<script>window.VD_BOARD = ' + JSON.stringify(cfg).replace(/</g, '\\u003c') + ';</script>\n<div id="app">'));
+  }
+  return htmlResponse(hasPw ? boardLoginPage(id, board) : boardNotReadyPage(board));
 }
 
 function monthList(fromMonth, toMonth) {
@@ -1010,6 +1120,19 @@ export default {
     if (path === '/' || path === '/index.html') {
       if (loggedIn) return htmlResponse(dashboardHtml);
       return htmlResponse((await passcodeSet(env)) ? loginPage() : setupPage());
+    }
+    const boardRoute = /^\/board\/([a-z]+)$/.exec(path);
+    if (boardRoute && BOARDS[boardRoute[1]] && request.method === 'GET') return serveBoard(env, request, url, boardRoute[1]);
+    const boardApi = /^\/api\/board\/([a-z]+)\/(setup|login|logout|metrics)$/.exec(path);
+    if (boardApi && BOARDS[boardApi[1]]) {
+      const bid = boardApi[1], act = boardApi[2];
+      if (act === 'setup' && request.method === 'POST') return apiBoardSetup(env, request, bid);
+      if (act === 'login' && request.method === 'POST') return apiBoardLogin(env, request, bid);
+      if (act === 'logout' && request.method === 'POST') return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json', 'Set-Cookie': boardCookie(bid, '', 0) } });
+      if (act === 'metrics' && request.method === 'GET') {
+        if (!(loggedIn || await validBoardSession(request, env, bid))) return json({ error: 'auth' }, 401);
+        return apiMetrics(env, url, BOARDS[bid]);
+      }
     }
     if (path === '/accounts' && request.method === 'GET') {
       if (!loggedIn) return Response.redirect(url.origin + '/', 302);

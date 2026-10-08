@@ -249,6 +249,10 @@ body {
 .mcard.kpi-miss { border-color: #C0392B; box-shadow: 0 0 0 2px #C0392B; }
 .tag-miss { background: #C0392B; color: #fff; border: 1px solid #C0392B; margin-right: 6px; }
 .mcard.kpi-miss .m-pri { color: #C0392B; }
+.staff-links { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; margin: -0.3rem 0 1.1rem; font-size: 13px; }
+.staff-link { padding: 6px 13px; border-radius: 50px; background: var(--c-teal-bg); color: var(--c-teal-text); border: 1px solid var(--c-teal-border); text-decoration: none; font-weight: 500; }
+.staff-link:hover { background: #d4eee7; }
+.staff-pw { font-size: 11px; color: var(--muted); margin: 0 6px 0 -4px; }
 .sec-head { --sec: #0D0D0D; display: flex; align-items: center; gap: 9px; margin: 1.5rem 0 0.7rem; }
 .sec-head:first-of-type { margin-top: 0.4rem; }
 .sec-dot { width: 12px; height: 12px; border-radius: 3px; background: var(--sec); }
@@ -282,7 +286,7 @@ var KIT_CONFIG = {
     "rostering": "Tanda"
   },
   "metrics": [
-    "fbSales", "fbCogs", "fbWage",
+    "fbSales", "fbCogs", "fbWage", "barCogs",
     "kSales", "kCogs", "kWage",
     "rSales", "rCogs", "rWage",
     "gSales", "gCogs",
@@ -347,7 +351,11 @@ var MANUAL = loadJson('vd_manual', {});        /* rangeKey -> { from,to,period,v
 function saveRecon() { try { localStorage.setItem('vd_recon', JSON.stringify(RECON)); } catch (e) {} }
 function saveOrgOk() { try { localStorage.setItem('vd_orgok', JSON.stringify(ORG_OK)); } catch (e) {} }
 function saveManual() { try { localStorage.setItem('vd_manual', JSON.stringify(MANUAL)); } catch (e) {} }
-function isManual() { return SETTINGS.dataMode === 'manual'; }
+/* Staff board mode: the server injects window.VD_BOARD on /board/<id> pages. */
+var BOARD = (typeof window !== 'undefined' && window.VD_BOARD) ? window.VD_BOARD : null;
+/* Staff boards linked from the top of the owner's dashboard. */
+var STAFF_BOARDS = [ { id: 'adam', label: 'Adam (Bar)' }, { id: 'amy', label: 'Amy (F&B)' }, { id: 'stephen', label: 'Stephen (Kitchen)' } ];
+function isManual() { return !BOARD && SETTINGS.dataMode === 'manual'; }
 function rangeKey(from, to) { return iso(from) + '_' + iso(to); }
 
 /* ============================================================
@@ -370,6 +378,9 @@ var METRIC_DEFS = {
   fbWage:  { section: 'fb', label: 'Wage % (F&B)', fmt: 'pct', dual: true, dollarsKey: 'fb_wages', baseKey: 'fb_sales', needs: ['accounting'], goodDir: 'down',
              def: 'Staff wages plus super ÷ F&B revenue. Uses ALL staff wages until the department split is set up in Xero.',
              check: 'Add your staff wages and super lines (not Johnson), then divide by Revenue (F&B).' },
+  barCogs: { section: 'fb', label: 'Cost of Sales (Bar)', fmt: 'pct', dual: true, dollarsKey: 'bar_cogs', baseKey: 'bar_sales', needs: ['accounting'], goodDir: 'down',
+             def: 'COGS - Tapd ÷ bar sales (Sales - Chard Bar, Gaming Bar, Plantation Bar and Tapd)',
+             check: 'Take COGS - Tapd and divide it by Sales - Chard Bar + Gaming Bar + Plantation Bar + Tapd.' },
   kSales:  { section: 'kitchen', label: 'Revenue (Food)', fmt: 'money', valueKey: 'kitchen_sales', needs: ['accounting'], goodDir: 'up',
              def: 'Food sales: Sales - Chard Restaurant, Coffee Shop and Tapd (Food) · ' + KIT_CONFIG.taxLabel,
              check: 'Add up those three Sales lines in your profit and loss for these dates.' },
@@ -424,7 +435,7 @@ var METRIC_DEFS = {
                   def: 'Revenue less cost of sales, wages, super and overheads · from ' + P.accounting,
                   decision: 'What the venue keeps after the costs you control. The bottom line of the board.' }
 };
-var CHOSEN = KIT_CONFIG.metrics.filter(function (k) { return METRIC_DEFS[k]; });
+var CHOSEN = (BOARD ? BOARD.metrics : KIT_CONFIG.metrics).filter(function (k) { return METRIC_DEFS[k]; });
 /* Cost-centre sections (owner's management view): each has its own colour. */
 var SECTIONS = {
   fb:      { label: 'Food & beverage', color: '#0E8A6E', tint: 'rgba(14,138,110,0.05)' },
@@ -564,7 +575,7 @@ function apiUrl(force) {
         + '&trend=' + monthKey(trendStart) + ':' + monthKey(trendEnd)
         + '&tz=' + encodeURIComponent(SETTINGS.timezone)
         + '&rollover=' + (+SETTINGS.rolloverHour || 0);
-  return '/api/metrics?' + q + (force ? '&refresh=1' : '');
+  return (BOARD ? '/api/board/' + BOARD.id + '/metrics?' : '/api/metrics?') + q + (force ? '&refresh=1' : '');
 }
 
 /* ---------- Manual mode: build state.data from typed-in numbers ---------- */
@@ -835,14 +846,14 @@ function render() {
 
   /* Topbar */
   var top = el('div', 'topbar');
-  top.appendChild(el('div', 'venue-name', esc(SETTINGS.venueName)));
-  top.appendChild(el('div', 'topbar-sub', 'Your numbers · ' + esc(KIT_CONFIG.taxLabel) + ' · financial year ' + esc(KIT_CONFIG.fyLabel)));
+  top.appendChild(el('div', 'venue-name', esc(BOARD ? BOARD.venue : SETTINGS.venueName)));
+  top.appendChild(el('div', 'topbar-sub', (BOARD ? esc(BOARD.name) + '\u2019s board · ' + esc(BOARD.role) : 'Your numbers') + ' · ' + esc(KIT_CONFIG.taxLabel) + ' · financial year ' + esc(KIT_CONFIG.fyLabel)));
   root.appendChild(top);
   root.appendChild(el('div', 'top-rule'));
 
   /* Nav */
   var nav = el('div', 'nav');
-  var tabs = isManual()
+  var tabs = BOARD ? [ { key: 'dashboard', label: 'Dashboard' } ] : isManual()
     ? [ { key: 'dashboard', label: 'Dashboard' }, { key: 'enter', label: 'Enter numbers' }, { key: 'settings', label: 'Settings' } ]
     : [ { key: 'dashboard', label: 'Dashboard' }, { key: 'connections', label: 'Connections' }, { key: 'recon', label: 'Check your numbers' }, { key: 'settings', label: 'Settings' } ];
   tabs.forEach(function (t) {
@@ -851,15 +862,40 @@ function render() {
     b.onclick = function () { state.view = t.key; render(); };
     nav.appendChild(b);
   });
+  if (BOARD) {
+    var lo = el('button', 'nav-tab', BOARD.owner ? 'Back to main dashboard' : 'Log out');
+    lo.onclick = function () {
+      if (BOARD.owner) { window.location.href = '/'; return; }
+      fetch('/api/board/' + BOARD.id + '/logout', { method: 'POST' }).then(function () { location.reload(); });
+    };
+    nav.appendChild(lo);
+  }
   root.appendChild(nav);
+  if (!BOARD) {
+    /* Links to each staff member's board (each has its own password). */
+    var sb = el('div', 'staff-links');
+    sb.appendChild(el('span', 'period-label', 'Staff boards'));
+    STAFF_BOARDS.forEach(function (b) {
+      var a = document.createElement('a');
+      a.className = 'staff-link'; a.href = '/board/' + b.id; a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = b.label;
+      sb.appendChild(a);
+      var ps = document.createElement('a');
+      ps.className = 'staff-pw'; ps.href = '/board/' + b.id + '?setup=1'; ps.target = '_blank'; ps.rel = 'noopener';
+      ps.textContent = 'password';
+      ps.title = 'Set or change ' + b.label + '\u2019s password';
+      sb.appendChild(ps);
+    });
+    root.appendChild(sb);
+  }
 
   /* Banners */
-  if (!isManual() && anyConfiguredSource() && unconfirmedOrgs().length) {
+  if (!BOARD && !isManual() && anyConfiguredSource() && unconfirmedOrgs().length) {
     var ub = el('div', 'banner banner-amber');
     ub.innerHTML = '<b>New connection.</b> Confirm the connected account is your business on the <span class="banner-link" id="go-conn">Connections screen</span>.';
     root.appendChild(ub);
   }
-  if (!isManual() && anyConfiguredSource() && unconfirmedConnectedMetrics().length) {
+  if (!BOARD && !isManual() && anyConfiguredSource() && unconfirmedConnectedMetrics().length) {
     var b = el('div', 'banner banner-amber');
     b.innerHTML = '<b>Not verified yet.</b> Before trusting these numbers, check them against your own records on the <span class="banner-link" id="go-recon">Check your numbers screen</span>. Money figures should match your accounting to the cent.';
     root.appendChild(b);
@@ -1017,7 +1053,9 @@ function metricCard(key, cur, prev, yoy, r) {
     return card;
   }
 
-  if (state.data && state.data.manual) {
+  if (BOARD) {
+    /* staff boards: no verification tags */
+  } else if (state.data && state.data.manual) {
     if (manualEntry({ from: r.from, to: r.to })) card.appendChild(el('span', 'm-tag tag-manual', 'Entered by you'));
   } else if (RECON[key] === 'flagged') {
     card.className += ' needs-check';
