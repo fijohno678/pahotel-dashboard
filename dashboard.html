@@ -429,7 +429,7 @@ var METRIC_DEFS = {
              def: 'COGS - Chard Restaurant (Food), Coffee Shop, Coffee Shop Cakes, Tapd, Tapd (Food) and Wastage ÷ F&B revenue',
              check: 'Add up those six COGS lines (including Wastage), then divide by Revenue (F&B).' },
   fbWage:  { section: 'fb', label: 'Wage % (F&B)', fmt: 'pct', dual: true, dollarsKey: 'fb_wages', baseKey: 'fb_sales', needs: ['accounting'], goodDir: 'down',
-             def: 'Beverage + Restaurant department wages, plus their share of staff super, ÷ F&B revenue',
+             def: 'Beverage + Restaurant department wages, plus Rachel\u2019s pay (from Xero Payroll, moved out of General), plus their share of staff super, ÷ F&B revenue',
              pending: 'Waiting for department wages from Xero (reconnect Xero on the Connections screen).',
              check: 'Add the Beverage and Restaurant department wages (see the Wages by department table on the accounts page), then divide by Revenue (F&B).' },
   barCogs: { section: 'fb', cogsLike: true, label: 'Cost of Sales (Bar)', fmt: 'pct', dual: true, dollarsKey: 'bar_cogs', baseKey: 'bar_sales', needs: ['accounting'], goodDir: 'down',

@@ -88,7 +88,9 @@ const ADAPTERS = {
       tokenUrl: 'https://identity.xero.com/connect/token',
       /* + accounting.settings.read (read-only) to look up the 'Department'
          tracking category, so wages can be split by department (8 Oct 2026). */
-      scopes: 'offline_access accounting.reports.profitandloss.read accounting.settings.read',
+      /* + payroll.payruns.read / payroll.employees.read (read-only) to find
+         individual staff pay, e.g. Rachel's wages moved from General to F&B (11 Oct 2026). */
+      scopes: 'offline_access accounting.reports.profitandloss.read accounting.settings.read payroll.payruns.read payroll.employees.read',
       clientIdSecret: 'ACCOUNTING_CLIENT_ID',
       clientSecretSecret: 'ACCOUNTING_CLIENT_SECRET',
       tokenAuth: 'basic'
@@ -107,6 +109,7 @@ const ADAPTERS = {
       const rep = await xeroPnl(env, h, { fromDate: q.from, toDate: q.to }, 120);
       const f = xeroColumns(rep, 1)[0].figures;
       applyDeptWages(f, await xeroDeptPnl(env, h, { fromDate: q.from, toDate: q.to }, 120));
+      try { applyPayrollMoves(f, await payrollMoves(env, h, q.from, q.to)); } catch (e) {}
       try { applyStockGate(f, monthsInRange(q.from, q.to), await stocktakeStatus(env, h)); } catch (e) {}
       return f;
     },
@@ -139,6 +142,7 @@ const ADAPTERS = {
         const d = await xeroDeptPnl(env, h, { fromDate: mo + '-01', toDate: mo + '-' + String(ld).padStart(2, '0') }, mo < nowMo ? 86400 : 3600);
         if (d.unavailable) break;
         applyDeptWages(byMonth[mo], d);
+        try { applyPayrollMoves(byMonth[mo], await payrollMoves(env, h, mo + '-01', mo + '-' + String(ld).padStart(2, '0'))); } catch (e) {}
       }
       try { const st = await stocktakeStatus(env, h); months.forEach((mo) => applyStockGate(byMonth[mo], [mo], st)); } catch (e) {}
       months.forEach((mo) => {
@@ -482,6 +486,104 @@ function applyStockGate(figures, months, st) {
   figures.cogsNote = 'Cost of goods shows once the month-end stocktake for ' + pending.map((m) => MN[+m.slice(5) - 1]).join(' and ') + ' is in Xero.';
 }
 
+/* ---------------- Individual reallocations from Xero Payroll (owner, 11 Oct 2026)
+   Some people are tagged "General" in Xero but belong to a cost centre. Their
+   actual pay (gross wages + super) is read from posted pay runs, spread over
+   each pay period by days, and moved from General (Overheads) to the target. */
+const PAYROLL_MOVES = [
+  { first: 'Rachel', last: null, to: 'fb', label: 'F&B' }
+];
+let PAYROLL_BUDGET = 8; /* max uncached pay-run fetches per request (Worker subrequest limit) */
+function xDate(v) {
+  const m = /\/Date\((\d+)/.exec(String(v || ''));
+  if (m) return new Date(+m[1]).toISOString().slice(0, 10);
+  return String(v || '').slice(0, 10);
+}
+async function payrollRuns(env, h) {
+  const tenant = await xeroTenant(env, h);
+  const key = 'payroll:runs:' + tenant.id;
+  const hit = await env.TOKENS.get(key);
+  if (hit) { try { return JSON.parse(hit); } catch (e) {} }
+  let runs = [];
+  for (let page = 1; page <= 3; page++) {
+    const data = await h.fetchJson('https://api.xero.com/payroll.xro/1.0/PayRuns?page=' + page, { headers: { 'xero-tenant-id': tenant.id, Accept: 'application/json' } });
+    const list = (data && data.PayRuns) || [];
+    runs = runs.concat(list.filter((r) => String(r.PayRunStatus || '').toUpperCase() === 'POSTED').map((r) => ({
+      id: r.PayRunID, start: xDate(r.PayRunPeriodStartDate), end: xDate(r.PayRunPeriodEndDate), upd: String(r.UpdatedDateUTC || '')
+    })));
+    if (list.length < 100) break;
+  }
+  try { await env.TOKENS.put(key, JSON.stringify(runs), { expirationTtl: 3600 }); } catch (e) {}
+  return runs;
+}
+async function payrollEmployees(env, h) {
+  const tenant = await xeroTenant(env, h);
+  const key = 'payroll:emps:' + tenant.id;
+  const hit = await env.TOKENS.get(key);
+  if (hit) { try { return JSON.parse(hit); } catch (e) {} }
+  const data = await h.fetchJson('https://api.xero.com/payroll.xro/1.0/Employees', { headers: { 'xero-tenant-id': tenant.id, Accept: 'application/json' } });
+  const map = {};
+  ((data && data.Employees) || []).forEach((e) => { map[e.EmployeeID] = { first: e.FirstName || '', last: e.LastName || '' }; });
+  try { await env.TOKENS.put(key, JSON.stringify(map), { expirationTtl: 86400 }); } catch (e) {}
+  return map;
+}
+async function payrunDetail(env, h, run) {
+  const key = 'payroll:run:' + run.id + ':' + run.upd;
+  const hit = await env.TOKENS.get(key);
+  if (hit) { try { return JSON.parse(hit); } catch (e) {} }
+  if (PAYROLL_BUDGET <= 0) return null;
+  PAYROLL_BUDGET--;
+  const tenant = await xeroTenant(env, h);
+  const data = await h.fetchJson('https://api.xero.com/payroll.xro/1.0/PayRuns/' + run.id, { headers: { 'xero-tenant-id': tenant.id, Accept: 'application/json' } });
+  const pr = data && data.PayRuns && data.PayRuns[0];
+  let emps = null;
+  const slips = [];
+  for (const sl of ((pr && pr.Payslips) || [])) {
+    let first = sl.FirstName, last = sl.LastName;
+    if (first == null) { emps = emps || await payrollEmployees(env, h); const e = emps[sl.EmployeeID] || {}; first = e.first; last = e.last; }
+    slips.push({ first: first || '', last: last || '', cents: toCents(sl.Wages) + toCents(sl.Super) });
+  }
+  const out = { start: run.start, end: run.end, slips: slips };
+  try { await env.TOKENS.put(key, JSON.stringify(out), { expirationTtl: 60 * 60 * 24 * 400 }); } catch (e) {}
+  return out;
+}
+function dayCount(a, b) { return Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z')) / 86400000) + 1; }
+/* Pay for each PAYROLL_MOVES person over [from, to], spread by pay-period days. */
+async function payrollMoves(env, h, from, to) {
+  let runs;
+  try { runs = await payrollRuns(env, h); }
+  catch (e) { return { unavailable: (e.status === 401 || e.status === 403) ? 'Xero Payroll needs read-only permission: click Reconnect on the Connections screen.' : 'Couldn’t read Xero Payroll just now.' }; }
+  const out = { moves: PAYROLL_MOVES.map((m) => ({ who: m.first + (m.last ? ' ' + m.last : ''), to: m.to, label: m.label, cents: 0 })), incomplete: false };
+  for (const run of runs) {
+    if (!run.start || !run.end || run.end < from || run.start > to) continue;
+    const det = await payrunDetail(env, h, run);
+    if (!det) { out.incomplete = true; continue; }
+    const os = run.start > from ? run.start : from, oe = run.end < to ? run.end : to;
+    const frac = dayCount(os, oe) / dayCount(run.start, run.end);
+    PAYROLL_MOVES.forEach((m, i) => {
+      det.slips.forEach((sl) => {
+        if (sl.first.trim().toLowerCase() !== m.first.toLowerCase()) return;
+        if (m.last && sl.last.trim().toLowerCase() !== m.last.toLowerCase()) return;
+        out.moves[i].cents += Math.round(sl.cents * frac);
+      });
+    });
+  }
+  return out;
+}
+function applyPayrollMoves(figures, pm) {
+  if (!figures || !pm || pm.unavailable || figures[pm.moves[0].to + '_wages'] == null) return;
+  pm.moves.forEach((m) => {
+    const general = Math.round((figures.generalWages || 0) * 100);
+    const amt = Math.min(m.cents, Math.max(0, general)); /* never move more than General holds */
+    if (amt <= 0) return;
+    figures[m.to + '_wages'] = Math.round(figures[m.to + '_wages'] * 100 + amt) / 100;
+    figures.generalWages = (general - amt) / 100;
+    figures.overheads = Math.round(figures.overheads * 100 - amt) / 100;
+    figures.wagesSuper = Math.round(figures.wagesSuper * 100 + amt) / 100;
+  });
+  if (pm.incomplete) figures.payrollNote = 'Some pay-run history is still loading from Xero Payroll; refresh in a minute.';
+}
+
 function xeroColumns(rep, n) {
   /* Overall Cost of goods (owner's choice): every line named in a cost
      centre's COGS list, plus any other line named "COGS", wherever it sits.
@@ -592,8 +694,12 @@ async function accountsPage(env, url) {
       body += '<p>From the Xero tracking category "' + escHtml(dp.category) + '". Staff super (' + money(ts) + ', tagged General in Xero) is shared across departments in proportion to wages. Owners\u2019 pay is not included.</p><table><tr><td><b>Department</b></td><td><b>Wages</b></td><td><b>+ super share</b></td><td><b>Goes to</b></td></tr>'
         + ds.map((k) => '<tr><td>' + escHtml(k) + '</td><td>' + money(dp.wages[k] || 0) + '</td><td>' + money(tw ? Math.round((dp.wages[k] || 0) / tw * ts) : 0) + '</td><td>' + where(k) + '</td></tr>').join('') + '</table>';
     }
+    const pmv = await payrollMoves(env, h, from, to);
+    if (pmv.unavailable) body += '<p><b>Individual moves (Xero Payroll):</b> ' + escHtml(pmv.unavailable) + '</p>';
+    else body += '<h2>Moved from General using Xero Payroll</h2><table>' + pmv.moves.map((m) => '<tr><td>' + escHtml(m.who) + ' (wages + super, by pay period)</td><td>' + money(m.cents) + '</td><td>General \u2192 ' + escHtml(m.label) + '</td></tr>').join('') + '</table>' + (pmv.incomplete ? '<p><em>Some pay runs are still loading; refresh in a minute.</em></p>' : '');
     const f = col.figures;
     applyDeptWages(f, dp);
+    applyPayrollMoves(f, pmv);
     body += '<h2>Totals</h2><table><tr><td>Revenue</td><td>' + money(Math.round(f.revenue * 100)) + '</td></tr><tr><td>Cost of goods</td><td>' + money(Math.round(f.cogs * 100)) + '</td></tr><tr><td>Wages and super</td><td>' + money(Math.round(f.wagesSuper * 100)) + '</td></tr><tr><td>Overheads</td><td>' + money(Math.round(f.overheads * 100)) + '</td></tr></table>';
   } catch (e) {
     body = '<h1>Not connected yet</h1><p>Connect Xero on the Connections screen first.</p>';
@@ -1334,6 +1440,7 @@ function json(obj, status) {
 
 export default {
   async fetch(request, env) {
+    PAYROLL_BUDGET = 8;
     const url = new URL(request.url);
     const path = url.pathname;
 
